@@ -16,6 +16,8 @@ struct ContentView: View {
 
     @State private var isShowingSavePlace = false
     @State private var isShowingPlaceSearch = false
+    @State private var isShowingMapPinPicker = false
+    @State private var directPlaceName = ""
 
     @State private var selectedHistory: DateHistory?
     private var displayedPlaces: [DatePlace] {
@@ -102,8 +104,7 @@ struct ContentView: View {
                         selectedCoordinate = nil
                     }
                 )
-                }
-            
+            }
             .onAppear {
                 if selectedHistory == nil {
                     selectedHistory = histories.first
@@ -967,27 +968,111 @@ private struct AddPlaceView: View {
     @State private var latitude: Double?
     @State private var longitude: Double?
 
-    @State private var isShowingPlaceSearch = false
+    @State private var searchResults: [PlaceSearchResult] = []
+    @State private var isSearching = false
+    @State private var searchErrorMessage: String?
+    @State private var searchTask: Task<Void, Never>?
+
+    @State private var isShowingMapPinPicker = false
+    @State private var directPlaceName = ""
+
+    @State private var shouldSkipNextSearch = false
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("장소") {
-                    HStack {
-                        TextField(
-                            "장소 이름",
-                            text: $name
-                        )
-
-                        Button {
-                            isShowingPlaceSearch = true
-                        } label: {
-                            Image(systemName: "magnifyingglass")
-                        }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("장소 검색")
+                    TextField(
+                        "장소 이름을 입력하세요",
+                        text: $name
+                    )
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onChange(of: name) { _, newValue in
+                        handleNameChange(newValue)
                     }
 
+                    if !cleanName.isEmpty {
+                        Button {
+                            searchTask?.cancel()
+                            directPlaceName = cleanName
+                            isShowingMapPinPicker = true
+                        } label: {
+                            Label {
+                                VStack(
+                                    alignment: .leading,
+                                    spacing: 3
+                                ) {
+                                    Text(
+                                        "‘\(cleanName)’으로 직접 추가"
+                                    )
+                                    .foregroundStyle(.primary)
+
+                                    Text(
+                                        "지도에서 위치를 직접 선택합니다."
+                                    )
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                }
+                            } icon: {
+                                Image(
+                                    systemName: "mappin.and.ellipse"
+                                )
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    if isSearching {
+                        HStack {
+                            Spacer()
+
+                            ProgressView("검색 중...")
+
+                            Spacer()
+                        }
+                    }
+
+                    ForEach(searchResults) { result in
+                        Button {
+                            selectSearchResult(result)
+                        } label: {
+                            VStack(
+                                alignment: .leading,
+                                spacing: 6
+                            ) {
+                                Text(result.cleanTitle)
+                                    .font(.headline)
+                                    .foregroundStyle(.primary)
+
+                                if !result.category.isEmpty {
+                                    Text(result.category)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                Text(result.displayAddress)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                            .frame(
+                                maxWidth: .infinity,
+                                alignment: .leading
+                            )
+                            .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    if let searchErrorMessage {
+                        Text(searchErrorMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Section("메모") {
                     TextField(
                         "메모",
                         text: $memo,
@@ -1020,6 +1105,7 @@ private struct AddPlaceView: View {
                     placement: .cancellationAction
                 ) {
                     Button("취소") {
+                        searchTask?.cancel()
                         dismiss()
                     }
                 }
@@ -1030,31 +1116,29 @@ private struct AddPlaceView: View {
                     Button("저장") {
                         savePlace()
                     }
-                    .disabled(cleanName.isEmpty)
+                    .disabled(
+                        cleanName.isEmpty ||
+                        latitude == nil ||
+                        longitude == nil
+                    )
                 }
             }
             .sheet(
-                isPresented: $isShowingPlaceSearch
+                isPresented: $isShowingMapPinPicker
             ) {
-                PlaceSearchView(
-                    onSelect: { result in
-                        guard
-                            let resultLatitude = result.latitude,
-                            let resultLongitude = result.longitude
-                        else {
-                            return
-                        }
-
-                        name = result.cleanTitle
-                        latitude = resultLatitude
-                        longitude = resultLongitude
-                    },
-                    onDirectAdd: { directName in
-                        name = directName
-                        latitude = nil
-                        longitude = nil
-                    }
-                )
+                MapPinPickerView(
+                    placeName: directPlaceName
+                ) { coordinate in
+                    shouldSkipNextSearch = true
+                    name = directPlaceName
+                    latitude = coordinate.latitude
+                    longitude = coordinate.longitude
+                    searchResults = []
+                    searchErrorMessage = nil
+                }
+            }
+            .onDisappear {
+                searchTask?.cancel()
             }
         }
     }
@@ -1071,8 +1155,108 @@ private struct AddPlaceView: View {
         )
     }
 
+    private func handleNameChange(
+        _ newValue: String
+    ) {
+        searchTask?.cancel()
+
+        if shouldSkipNextSearch {
+            shouldSkipNextSearch = false
+            return
+        }
+
+        latitude = nil
+        longitude = nil
+        searchErrorMessage = nil
+
+        let trimmedName = newValue.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+
+        guard trimmedName.count >= 2 else {
+            searchResults = []
+            isSearching = false
+            return
+        }
+
+        searchTask = Task {
+            try? await Task.sleep(
+                for: .milliseconds(400)
+            )
+
+            guard !Task.isCancelled else {
+                return
+            }
+
+            await searchPlaces(
+                query: trimmedName
+            )
+        }
+    }
+
+    @MainActor
+    private func searchPlaces(
+        query: String
+    ) async {
+        isSearching = true
+        searchErrorMessage = nil
+
+        defer {
+            isSearching = false
+        }
+
+        do {
+            let results = try await PlaceSearchService.search(
+                query: query
+            )
+
+            guard !Task.isCancelled else {
+                return
+            }
+
+            searchResults = results
+
+            if results.isEmpty {
+                searchErrorMessage = "검색 결과가 없습니다."
+            }
+        } catch {
+            guard !Task.isCancelled else {
+                return
+            }
+
+            searchResults = []
+            searchErrorMessage =
+                error.localizedDescription
+        }
+    }
+
+    private func selectSearchResult(
+        _ result: PlaceSearchResult
+    ) {
+        guard
+            let resultLatitude = result.latitude,
+            let resultLongitude = result.longitude
+        else {
+            return
+        }
+
+        searchTask?.cancel()
+        shouldSkipNextSearch = true
+
+        name = result.cleanTitle
+        latitude = resultLatitude
+        longitude = resultLongitude
+
+        searchResults = []
+        searchErrorMessage = nil
+    }
+
     private func savePlace() {
-        guard !cleanName.isEmpty else {
+        guard
+            !cleanName.isEmpty,
+            let latitude,
+            let longitude
+        else {
             return
         }
 
