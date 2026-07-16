@@ -7,11 +7,16 @@ final class DatePlace {
     var order: Int
     var memo: String
 
-    // 네이버 지도 연결 후 사용할 좌표
     var latitude: Double?
     var longitude: Double?
 
     var history: DateHistory?
+
+    @Relationship(
+        deleteRule: .cascade,
+        inverse: \DatePhoto.place
+    )
+    var photos: [DatePhoto] = []
 
     init(
         name: String,

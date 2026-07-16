@@ -7,7 +7,8 @@ struct DateMapApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             DateHistory.self,
-            DatePlace.self
+            DatePlace.self,
+            DatePhoto.self
         ])
 
         let configuration = ModelConfiguration(

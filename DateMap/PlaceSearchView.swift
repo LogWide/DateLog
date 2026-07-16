@@ -4,6 +4,7 @@ struct PlaceSearchView: View {
     @Environment(\.dismiss) private var dismiss
 
     let onSelect: (PlaceSearchResult) -> Void
+    let onDirectAdd: (String) -> Void
 
     @State private var query = ""
     @State private var results: [PlaceSearchResult] = []
@@ -47,14 +48,37 @@ struct PlaceSearchView: View {
 
                     Spacer()
                 } else {
-                    List(results) { result in
-                        Button {
-                            onSelect(result)
-                            dismiss()
-                        } label: {
-                            PlaceSearchResultRow(result: result)
+                    List {
+                        if !cleanQuery.isEmpty {
+                            Button {
+                                onDirectAdd(cleanQuery)
+                                dismiss()
+                            } label: {
+                                Label {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text("‘\(cleanQuery)’으로 직접 추가")
+                                            .foregroundStyle(.primary)
+
+                                        Text("지도에서 위치를 직접 선택합니다.")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                } icon: {
+                                    Image(systemName: "mappin.and.ellipse")
+                                }
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
+
+                        ForEach(results) { result in
+                            Button {
+                                onSelect(result)
+                                dismiss()
+                            } label: {
+                                PlaceSearchResultRow(result: result)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                     .listStyle(.plain)
                 }

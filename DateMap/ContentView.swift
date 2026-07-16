@@ -1,5 +1,7 @@
 import SwiftUI
 import SwiftData
+import PhotosUI
+import UIKit
 
 struct ContentView: View {
     @Query(
@@ -77,23 +79,31 @@ struct ContentView: View {
                 }
             }
             .sheet(isPresented: $isShowingPlaceSearch) {
-                PlaceSearchView { result in
-                    guard
-                        let latitude = result.latitude,
-                        let longitude = result.longitude
-                    else {
-                        return
+                PlaceSearchView(
+                    onSelect: { result in
+                        guard
+                            let latitude = result.latitude,
+                            let longitude = result.longitude
+                        else {
+                            return
+                        }
+
+                        selectedSavedPlace = nil
+                        selectedPlaceName = result.cleanTitle
+
+                        selectedCoordinate = CoordinateData(
+                            latitude: latitude,
+                            longitude: longitude
+                        )
+                    },
+                    onDirectAdd: { directName in
+                        selectedSavedPlace = nil
+                        selectedPlaceName = directName
+                        selectedCoordinate = nil
                     }
-
-                    selectedSavedPlace = nil
-                    selectedPlaceName = result.cleanTitle
-
-                    selectedCoordinate = CoordinateData(
-                        latitude: latitude,
-                        longitude: longitude
-                    )
+                )
                 }
-            }
+            
             .onAppear {
                 if selectedHistory == nil {
                     selectedHistory = histories.first
@@ -452,25 +462,49 @@ private struct DateHistoryDetailView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(sortedPlaces) { place in
-                        HStack(spacing: 12) {
-                            Text("\(place.order + 1)")
-                                .font(.caption.bold())
-                                .foregroundStyle(.white)
-                                .frame(width: 26, height: 26)
-                                .background(.blue)
-                                .clipShape(Circle())
+                        NavigationLink {
+                            PlaceDetailView(place: place)
+                        } label: {
+                            HStack(spacing: 12) {
+                                Text("\(place.order + 1)")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.white)
+                                    .frame(width: 26, height: 26)
+                                    .background(.blue)
+                                    .clipShape(Circle())
 
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(place.name)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(place.name)
+                                        .foregroundStyle(.primary)
 
-                                if !place.memo.isEmpty {
-                                    Text(place.memo)
+                                    if !place.memo.isEmpty {
+                                        Text(place.memo)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+
+                                    if !place.photos.isEmpty {
+                                        Label(
+                                            "\(place.photos.count)장",
+                                            systemImage: "photo.on.rectangle"
+                                        )
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
+                                    }
+                                }
+
+                                Spacer()
+
+                                if let firstPhoto = place.photos
+                                    .sorted(by: { $0.order < $1.order })
+                                    .first
+                                {
+                                    PhotoThumbnailView(photo: firstPhoto)
+                                        .frame(width: 64, height: 64)
                                 }
                             }
+                            .padding(.vertical, 4)
                         }
-                        .padding(.vertical, 3)
                     }
                     .onDelete(perform: deletePlaces)
                     .onMove(perform: movePlaces)
@@ -560,6 +594,364 @@ private struct DateHistoryDetailView: View {
         }
     }
 }
+private struct PlaceDetailView: View {
+    @Environment(\.modelContext) private var modelContext
+
+    let place: DatePlace
+
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
+    @State private var isImportingPhotos = false
+    @State private var errorMessage: String?
+    @State private var selectedPhoto: DatePhoto?
+
+    private var sortedPhotos: [DatePhoto] {
+        place.photos.sorted {
+            if $0.order == $1.order {
+                return $0.createdAt < $1.createdAt
+            }
+
+            return $0.order < $1.order
+        }
+    }
+
+    private let columns = [
+        GridItem(.adaptive(minimum: 100), spacing: 8)
+    ]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                placeInformationSection
+                photoSection
+            }
+            .padding()
+        }
+        .navigationTitle(place.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                PhotosPicker(
+                    selection: $selectedPhotoItems,
+                    maxSelectionCount: 20,
+                    matching: .images
+                ) {
+                    Image(systemName: "photo.badge.plus")
+                }
+                .accessibilityLabel("사진 추가")
+                .disabled(isImportingPhotos)
+            }
+        }
+        .onChange(of: selectedPhotoItems) {
+            guard !selectedPhotoItems.isEmpty else {
+                return
+            }
+
+            Task {
+                await importSelectedPhotos()
+            }
+        }
+        .alert(
+            "사진을 추가하지 못했습니다",
+            isPresented: Binding(
+                get: {
+                    errorMessage != nil
+                },
+                set: { newValue in
+                    if !newValue {
+                        errorMessage = nil
+                    }
+                }
+            )
+        ) {
+            Button("확인", role: .cancel) {
+                errorMessage = nil
+            }
+        } message: {
+            Text(errorMessage ?? "")
+        }
+        .sheet(item: $selectedPhoto) { photo in
+            PhotoGalleryView(
+                photos: sortedPhotos,
+                initialPhotoID: photo.id
+            )
+        }
+    }
+
+    private var placeInformationSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("장소 정보")
+                .font(.headline)
+
+            if !place.memo.isEmpty {
+                Text(place.memo)
+                    .foregroundStyle(.secondary)
+            }
+
+            if
+                let latitude = place.latitude,
+                let longitude = place.longitude
+            {
+                Text(
+                    String(
+                        format: "%.6f, %.6f",
+                        latitude,
+                        longitude
+                    )
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var photoSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("사진")
+                    .font(.headline)
+
+                Spacer()
+
+                if isImportingPhotos {
+                    ProgressView()
+                } else {
+                    Text("\(sortedPhotos.count)장")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if sortedPhotos.isEmpty {
+                PhotosPicker(
+                    selection: $selectedPhotoItems,
+                    maxSelectionCount: 20,
+                    matching: .images
+                ) {
+                    VStack(spacing: 10) {
+                        Image(systemName: "photo.badge.plus")
+                            .font(.largeTitle)
+
+                        Text("사진 추가")
+                            .font(.headline)
+
+                        Text("이 장소의 사진을 여러 장 선택할 수 있습니다.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 40)
+                    .background(.quaternary)
+                    .clipShape(
+                        RoundedRectangle(cornerRadius: 16)
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(isImportingPhotos)
+            } else {
+                LazyVGrid(columns: columns, spacing: 8) {
+                    ForEach(sortedPhotos) { photo in
+                        Button {
+                            selectedPhoto = photo
+                        } label: {
+                            PhotoThumbnailView(photo: photo)
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button(
+                                "사진 삭제",
+                                systemImage: "trash",
+                                role: .destructive
+                            ) {
+                                deletePhoto(photo)
+                            }
+                        }
+                    }
+
+                    PhotosPicker(
+                        selection: $selectedPhotoItems,
+                        maxSelectionCount: 20,
+                        matching: .images
+                    ) {
+                        VStack(spacing: 6) {
+                            Image(systemName: "plus")
+                                .font(.title2)
+
+                            Text("추가")
+                                .font(.caption)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .aspectRatio(1, contentMode: .fit)
+                        .background(.quaternary)
+                        .clipShape(
+                            RoundedRectangle(cornerRadius: 12)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isImportingPhotos)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func importSelectedPhotos() async {
+        guard !selectedPhotoItems.isEmpty else {
+            return
+        }
+
+        isImportingPhotos = true
+        errorMessage = nil
+
+        defer {
+            isImportingPhotos = false
+            selectedPhotoItems = []
+        }
+
+        var nextOrder =
+            (place.photos.map(\.order).max() ?? -1) + 1
+
+        var importedCount = 0
+
+        for item in selectedPhotoItems {
+            do {
+                guard
+                    let originalData = try await item.loadTransferable(
+                        type: Data.self
+                    ),
+                    let image = UIImage(data: originalData),
+                    let compressedData = image.jpegData(
+                        compressionQuality: 0.82
+                    )
+                else {
+                    continue
+                }
+
+                let photo = DatePhoto(
+                    imageData: compressedData,
+                    order: nextOrder,
+                    place: place
+                )
+
+                place.photos.append(photo)
+                modelContext.insert(photo)
+
+                nextOrder += 1
+                importedCount += 1
+            } catch {
+                print("사진 가져오기 실패: \(error)")
+            }
+        }
+
+        guard importedCount > 0 else {
+            errorMessage = "선택한 사진을 불러오지 못했습니다."
+            return
+        }
+
+        do {
+            try modelContext.save()
+            place.photos.sort {
+                $0.order < $1.order
+            }
+        } catch {
+            errorMessage = "사진 저장 중 오류가 발생했습니다."
+            print("사진 저장 실패: \(error)")
+        }
+    }
+
+    private func deletePhoto(
+        _ photo: DatePhoto
+    ) {
+        modelContext.delete(photo)
+
+        let remainingPhotos = place.photos
+            .filter { $0 !== photo }
+            .sorted { $0.order < $1.order }
+
+        for (index, remainingPhoto) in remainingPhotos.enumerated() {
+            remainingPhoto.order = index
+        }
+
+        do {
+            try modelContext.save()
+        } catch {
+            errorMessage = "사진을 삭제하지 못했습니다."
+            print("사진 삭제 실패: \(error)")
+        }
+    }
+}
+
+private struct PhotoThumbnailView: View {
+    let photo: DatePhoto
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 12)
+                .fill(.quaternary)
+
+            if
+                let data = photo.imageData,
+                let uiImage = UIImage(data: data)
+            {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                VStack(spacing: 6) {
+                    Image(systemName: "photo")
+                        .font(.title2)
+
+                    Text("이미지를 불러올 수 없음")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+        .frame(height: 110)
+        .clipShape(
+            RoundedRectangle(cornerRadius: 12)
+        )
+    }
+}
+
+private struct PhotoViewerView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let photo: DatePhoto
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.black
+                    .ignoresSafeArea()
+
+                if
+                    let data = photo.imageData,
+                    let uiImage = UIImage(data: data)
+                {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .scaledToFit()
+                        .padding()
+                } else {
+                    ContentUnavailableView(
+                        "사진을 불러올 수 없습니다",
+                        systemImage: "photo.badge.exclamationmark"
+                    )
+                    .foregroundStyle(.white)
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("닫기") {
+                        dismiss()
+                    }
+                    .foregroundStyle(.white)
+                }
+            }
+        }
+    }
+}
 
 // MARK: - 장소 추가
 
@@ -572,44 +964,111 @@ private struct AddPlaceView: View {
     @State private var name = ""
     @State private var memo = ""
 
+    @State private var latitude: Double?
+    @State private var longitude: Double?
+
+    @State private var isShowingPlaceSearch = false
+
     var body: some View {
         NavigationStack {
             Form {
-                Section("장소 정보") {
-                    TextField(
-                        "장소 이름",
-                        text: $name
-                    )
+                Section("장소") {
+                    HStack {
+                        TextField(
+                            "장소 이름",
+                            text: $name
+                        )
+
+                        Button {
+                            isShowingPlaceSearch = true
+                        } label: {
+                            Image(systemName: "magnifyingglass")
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("장소 검색")
+                    }
 
                     TextField(
-                        "간단한 메모",
+                        "메모",
                         text: $memo,
                         axis: .vertical
                     )
                     .lineLimit(2...5)
                 }
+
+                if
+                    let latitude,
+                    let longitude
+                {
+                    Section("선택된 위치") {
+                        Text(
+                            String(
+                                format: "%.6f, %.6f",
+                                latitude,
+                                longitude
+                            )
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                }
             }
             .navigationTitle("장소 추가")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                ToolbarItem(
+                    placement: .cancellationAction
+                ) {
                     Button("취소") {
                         dismiss()
                     }
                 }
 
-                ToolbarItem(placement: .confirmationAction) {
+                ToolbarItem(
+                    placement: .confirmationAction
+                ) {
                     Button("저장") {
                         savePlace()
                     }
                     .disabled(cleanName.isEmpty)
                 }
             }
+            .sheet(
+                isPresented: $isShowingPlaceSearch
+            ) {
+                PlaceSearchView(
+                    onSelect: { result in
+                        guard
+                            let resultLatitude = result.latitude,
+                            let resultLongitude = result.longitude
+                        else {
+                            return
+                        }
+
+                        name = result.cleanTitle
+                        latitude = resultLatitude
+                        longitude = resultLongitude
+                    },
+                    onDirectAdd: { directName in
+                        name = directName
+                        latitude = nil
+                        longitude = nil
+                    }
+                )
+            }
         }
     }
 
     private var cleanName: String {
-        name.trimmingCharacters(in: .whitespacesAndNewlines)
+        name.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+    }
+
+    private var cleanMemo: String {
+        memo.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
     }
 
     private func savePlace() {
@@ -623,9 +1082,9 @@ private struct AddPlaceView: View {
         let place = DatePlace(
             name: cleanName,
             order: nextOrder,
-            memo: memo.trimmingCharacters(
-                in: .whitespacesAndNewlines
-            )
+            memo: cleanMemo,
+            latitude: latitude,
+            longitude: longitude
         )
 
         place.history = history
@@ -647,7 +1106,8 @@ private struct AddPlaceView: View {
         .modelContainer(
             for: [
                 DateHistory.self,
-                DatePlace.self
+                DatePlace.self,
+                DatePhoto.self
             ],
             inMemory: true
         )

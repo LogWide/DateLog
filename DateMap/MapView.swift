@@ -334,11 +334,6 @@ struct MapView: UIViewRepresentable {
     }
 }
 
-struct CoordinateData: Equatable {
-    let latitude: Double
-    let longitude: Double
-}
-
 #Preview {
     MapView(
         places: [],
