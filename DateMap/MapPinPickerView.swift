@@ -16,6 +16,7 @@ struct MapPinPickerView: View {
     @State private var selectedCoordinate: CoordinateData?
     @State private var selectedSavedPlace: DatePlace?
     @State private var selectedPlaceName: String
+    @State private var selectedDistrictVisit: MapDistrictVisitSummary?
 
     init(
         placeName: String,
@@ -31,9 +32,12 @@ struct MapPinPickerView: View {
             ZStack {
                 MapView(
                     places: [],
+                    showsHeatmap: false,
+                    showsMarkerOrder: false,
                     selectedCoordinate: $selectedCoordinate,
                     selectedSavedPlace: $selectedSavedPlace,
-                    selectedPlaceName: $selectedPlaceName
+                    selectedPlaceName: $selectedPlaceName,
+                    selectedDistrictVisit: $selectedDistrictVisit
                 )
                 .ignoresSafeArea(edges: .bottom)
 

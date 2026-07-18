@@ -1,15 +1,31 @@
 import SwiftUI
+import SwiftData
 
 struct PlaceSearchView: View {
     @Environment(\.dismiss) private var dismiss
+    @Query(sort: \Wish.createdAt) private var wishes: [Wish]
 
     let onSelect: (PlaceSearchResult) -> Void
     let onDirectAdd: (String) -> Void
+    let onSelectWish: (Wish) -> Void
+    let showsWishSuggestions: Bool
 
     @State private var query = ""
     @State private var results: [PlaceSearchResult] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
+
+    init(
+        onSelect: @escaping (PlaceSearchResult) -> Void,
+        onDirectAdd: @escaping (String) -> Void,
+        onSelectWish: @escaping (Wish) -> Void = { _ in },
+        showsWishSuggestions: Bool = true
+    ) {
+        self.onSelect = onSelect
+        self.onDirectAdd = onDirectAdd
+        self.onSelectWish = onSelectWish
+        self.showsWishSuggestions = showsWishSuggestions
+    }
 
     // 본인의 Cloudflare Worker 주소
     private let workerBaseURL =
@@ -24,27 +40,6 @@ struct PlaceSearchView: View {
                     Spacer()
 
                     ProgressView("검색 중...")
-                    Spacer()
-                } else if let errorMessage {
-                    Spacer()
-
-                    ContentUnavailableView(
-                        "검색할 수 없습니다",
-                        systemImage: "exclamationmark.magnifyingglass",
-                        description: Text(errorMessage)
-                    )
-
-                    Spacer()
-                } else if results.isEmpty {
-                    Spacer()
-
-                    ContentUnavailableView(
-                        "장소 검색",
-                        systemImage: "magnifyingglass",
-                        description: Text(
-                            "카페, 식당, 공원 등의 이름을 검색하세요."
-                        )
-                    )
 
                     Spacer()
                 } else {
@@ -59,25 +54,71 @@ struct PlaceSearchView: View {
                                         Text("‘\(cleanQuery)’으로 직접 추가")
                                             .foregroundStyle(.primary)
 
-                                        Text("지도에서 위치를 직접 선택합니다.")
+                                        Text("검색 결과에 없을 때 이름만 먼저 저장합니다.")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
                                 } icon: {
-                                    Image(systemName: "mappin.and.ellipse")
+                                    Image(systemName: "plus.circle")
                                 }
                             }
                             .buttonStyle(.plain)
                         }
 
-                        ForEach(results) { result in
-                            Button {
-                                onSelect(result)
-                                dismiss()
-                            } label: {
-                                PlaceSearchResultRow(result: result)
+                        if showsWishSuggestions && !filteredWishes.isEmpty {
+                            Section("위시") {
+                                ForEach(filteredWishes) { wish in
+                                    Button {
+                                        onSelectWish(wish)
+                                        dismiss()
+                                    } label: {
+                                        HStack {
+                                            Image(systemName: "heart.fill")
+                                                .foregroundStyle(.pink)
+
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text(wish.name)
+                                                    .font(.headline)
+
+                                                if !wish.address.isEmpty {
+                                                    Text(wish.address)
+                                                        .font(.caption)
+                                                        .foregroundStyle(.secondary)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+                                }
                             }
-                            .buttonStyle(.plain)
+                        }
+
+                        if let errorMessage {
+                            ContentUnavailableView(
+                                "검색할 수 없습니다",
+                                systemImage: "exclamationmark.magnifyingglass",
+                                description: Text(errorMessage)
+                            )
+                            .listRowSeparator(.hidden)
+                        } else if results.isEmpty {
+                            ContentUnavailableView(
+                                "장소 검색",
+                                systemImage: "magnifyingglass",
+                                description: Text(
+                                    "카페, 식당, 공원 등의 이름을 검색하세요."
+                                )
+                            )
+                            .listRowSeparator(.hidden)
+                        } else {
+                            ForEach(results) { result in
+                                Button {
+                                    onSelect(result)
+                                    dismiss()
+                                } label: {
+                                    PlaceSearchResultRow(result: result)
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
                     }
                     .listStyle(.plain)
@@ -140,6 +181,16 @@ struct PlaceSearchView: View {
         query.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
+    }
+
+    private var filteredWishes: [Wish] {
+        guard !cleanQuery.isEmpty else {
+            return []
+        }
+
+        return wishes.filter {
+            $0.name.localizedCaseInsensitiveContains(cleanQuery)
+        }
     }
 
     @MainActor

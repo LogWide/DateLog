@@ -7,11 +7,17 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		6FBE3C5C300BDE420062025A /* DateLogTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FBE3C5B300BDE420062025A /* DateLogTypography.swift */; };
+		6FBE3C5E300BE38F0062025A /* AlbumView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FBE3C5D300BE38F0062025A /* AlbumView.swift */; };
+		6FBE3C60300BE6030062025A /* PlaceCategoryNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FBE3C5F300BE6020062025A /* PlaceCategoryNormalizer.swift */; };
 		6FD52BE73007D3A100E3ED55 /* NMapsMap in Frameworks */ = {isa = PBXBuildFile; productRef = 6FD52BE63007D3A100E3ED55 /* NMapsMap */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		6F5AF0E930068E410069D6D0 /* DateMap.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DateMap.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6FBE3C5B300BDE420062025A /* DateLogTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DateLogTypography.swift; sourceTree = "<group>"; };
+		6FBE3C5D300BE38F0062025A /* AlbumView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbumView.swift; sourceTree = "<group>"; };
+		6FBE3C5F300BE6020062025A /* PlaceCategoryNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceCategoryNormalizer.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -52,6 +58,9 @@
 			children = (
 				6F5AF0EB30068E410069D6D0 /* DateMap */,
 				6F5AF0EA30068E410069D6D0 /* Products */,
+				6FBE3C5B300BDE420062025A /* DateLogTypography.swift */,
+				6FBE3C5D300BE38F0062025A /* AlbumView.swift */,
+				6FBE3C5F300BE6020062025A /* PlaceCategoryNormalizer.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -141,6 +150,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6FBE3C5C300BDE420062025A /* DateLogTypography.swift in Sources */,
+				6FBE3C5E300BE38F0062025A /* AlbumView.swift in Sources */,
+				6FBE3C60300BE6030062025A /* PlaceCategoryNormalizer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -52,7 +52,7 @@ struct SavePinnedPlaceView: View {
 
                             ForEach(histories) { history in
                                 Text(
-                                    "\(history.title) · \(history.date.formatted(date: .abbreviated, time: .omitted))"
+                                    "\(history.title) · \(DateDisplayFormatter.string(from: history.date))"
                                 )
                                 .tag(history as DateHistory?)
                             }
@@ -83,6 +83,7 @@ struct SavePinnedPlaceView: View {
                             selection: $newDate,
                             displayedComponents: .date
                         )
+                        .environment(\.locale, Locale(identifier: "ko_KR"))
 
                         TextField(
                             "데이트 메모",
@@ -98,15 +99,12 @@ struct SavePinnedPlaceView: View {
                     }
                 }
 
-                Section("선택 좌표") {
-                    Text(
-                        String(
-                            format: "%.6f, %.6f",
-                            coordinate.latitude,
-                            coordinate.longitude
-                        )
+                Section("선택된 위치") {
+                    Label(
+                        "지도에서 선택한 위치입니다.",
+                        systemImage: "mappin.and.ellipse"
                     )
-                    .font(.caption)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
                 }
             }
