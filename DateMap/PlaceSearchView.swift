@@ -13,7 +13,18 @@ struct PlaceSearchView: View {
     @State private var query = ""
     @State private var results: [PlaceSearchResult] = []
     @State private var isLoading = false
+    @State private var isLoadingMore = false
+    @State private var nextSearchStart = 1
+    @State private var canLoadMore = false
     @State private var errorMessage: String?
+    @State private var searchDebounceTask: Task<Void, Never>?
+
+    @AppStorage("dateLogTheme")
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
+
+    private var selectedTheme: DateLogTheme {
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
+    }
 
     init(
         onSelect: @escaping (PlaceSearchResult) -> Void,
@@ -36,7 +47,7 @@ struct PlaceSearchView: View {
             VStack(spacing: 0) {
                 searchBar
 
-                if isLoading {
+                if isLoading && results.isEmpty {
                     Spacer()
 
                     ProgressView("검색 중...")
@@ -119,13 +130,42 @@ struct PlaceSearchView: View {
                                 }
                                 .buttonStyle(.plain)
                             }
+
+                            if canLoadMore || isLoadingMore {
+                                Button {
+                                    Task {
+                                        await loadMorePlaces()
+                                    }
+                                } label: {
+                                    HStack {
+                                        Spacer()
+
+                                        if isLoadingMore {
+                                            ProgressView()
+                                        } else {
+                                            Label(
+                                                "검색 결과 더보기",
+                                                systemImage: "chevron.down.circle"
+                                            )
+                                            .font(.body.weight(.semibold))
+                                        }
+
+                                        Spacer()
+                                    }
+                                    .padding(.vertical, 8)
+                                }
+                                .disabled(isLoadingMore)
+                                .listRowSeparator(.hidden)
+                            }
                         }
                     }
                     .listStyle(.plain)
                 }
             }
+            .background(selectedTheme.backgroundColor)
             .navigationTitle("장소 검색")
             .navigationBarTitleDisplayMode(.inline)
+            .tint(selectedTheme.primaryColor)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("닫기") {
@@ -149,32 +189,51 @@ struct PlaceSearchView: View {
             .autocorrectionDisabled()
             .submitLabel(.search)
             .onSubmit {
+                searchDebounceTask?.cancel()
+
                 Task {
                     await searchPlaces()
                 }
+            }
+            .onChange(of: query) { _, _ in
+                scheduleLiveSearch()
             }
 
             if !query.isEmpty {
                 Button {
                     query = ""
-                    results = []
-                    errorMessage = nil
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
             }
-
-            Button("검색") {
-                Task {
-                    await searchPlaces()
-                }
-            }
-            .disabled(cleanQuery.isEmpty || isLoading)
         }
         .padding()
         .background(.regularMaterial)
+    }
+
+    /// 타이핑 중에도 잠깐의 지연 후 자동으로 검색을 실행한다.
+    private func scheduleLiveSearch() {
+        searchDebounceTask?.cancel()
+
+        guard !cleanQuery.isEmpty else {
+            results = []
+            nextSearchStart = 1
+            canLoadMore = false
+            errorMessage = nil
+            return
+        }
+
+        searchDebounceTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+
+            guard !Task.isCancelled else {
+                return
+            }
+
+            await searchPlaces()
+        }
     }
 
     private var cleanQuery: String {
@@ -219,6 +278,14 @@ struct PlaceSearchView: View {
             URLQueryItem(
                 name: "query",
                 value: cleanQuery
+            ),
+            URLQueryItem(
+                name: "display",
+                value: "10"
+            ),
+            URLQueryItem(
+                name: "start",
+                value: "1"
             )
         ]
 
@@ -249,12 +316,46 @@ struct PlaceSearchView: View {
             )
 
             results = decoded.items
+            nextSearchStart = decoded.items.count + 1
+            canLoadMore = !decoded.items.isEmpty
 
             if decoded.items.isEmpty {
                 errorMessage = "검색 결과가 없습니다."
             }
         } catch {
             errorMessage = "검색 중 오류가 발생했습니다.\n\(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func loadMorePlaces() async {
+        guard !cleanQuery.isEmpty, !isLoadingMore, canLoadMore else {
+            return
+        }
+
+        isLoadingMore = true
+        errorMessage = nil
+
+        defer {
+            isLoadingMore = false
+        }
+
+        do {
+            let newResults = try await PlaceSearchService.search(
+                query: cleanQuery,
+                display: 10,
+                start: nextSearchStart
+            )
+            let existingIDs = Set(results.map(\.id))
+            let uniqueResults = newResults.filter {
+                !existingIDs.contains($0.id)
+            }
+
+            results.append(contentsOf: uniqueResults)
+            nextSearchStart += newResults.count
+            canLoadMore = !newResults.isEmpty && !uniqueResults.isEmpty
+        } catch {
+            errorMessage = "추가 검색 중 오류가 발생했습니다.\n\(error.localizedDescription)"
         }
     }
 }

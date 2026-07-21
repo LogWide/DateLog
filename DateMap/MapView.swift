@@ -18,10 +18,16 @@ struct MapDistrict {
     }
 }
 
-struct MapDistrictVisitSummary: Equatable {
+struct MapDistrictVisitSummary: Identifiable, Hashable {
     let code: String
     let name: String
     let visitCount: Int
+    let latitude: Double
+    let longitude: Double
+
+    var id: String {
+        code
+    }
 }
 
 private struct DistrictGeoJSONProperties: Decodable {
@@ -112,6 +118,16 @@ enum MapDistrictStore {
         return districts
     }
 
+    static func district(withCode code: String) -> MapDistrict? {
+        districts().first { $0.code == code }
+    }
+
+    static func districtCode(for place: DatePlace) -> String? {
+        districts().first { district in
+            districtMatches(place: place, district: district)
+        }?.code
+    }
+
     private static func districtPolygons(
         from geometry: any MKShape & MKGeoJSONObject
     ) -> [[NMGLatLng]] {
@@ -148,6 +164,75 @@ enum MapDistrictStore {
             )
         }
     }
+
+    private static func districtMatches(
+        place: DatePlace,
+        district: MapDistrict
+    ) -> Bool {
+        if
+            let latitude = place.latitude,
+            let longitude = place.longitude,
+            districtContains(
+                coordinate: NMGLatLng(lat: latitude, lng: longitude),
+                district: district
+            )
+        {
+            return true
+        }
+
+        if place.address.contains(district.name) {
+            return true
+        }
+
+        if place.name.contains(district.name) {
+            return true
+        }
+
+        return false
+    }
+
+    private static func districtContains(
+        coordinate: NMGLatLng,
+        district: MapDistrict
+    ) -> Bool {
+        district.polygons.contains {
+            polygonContains(coordinate: coordinate, polygon: $0)
+        }
+    }
+
+    private static func polygonContains(
+        coordinate: NMGLatLng,
+        polygon: [NMGLatLng]
+    ) -> Bool {
+        guard polygon.count >= 3 else {
+            return false
+        }
+
+        var isInside = false
+        var previousIndex = polygon.count - 1
+
+        for currentIndex in polygon.indices {
+            let currentPoint = polygon[currentIndex]
+            let previousPoint = polygon[previousIndex]
+            let crossesLatitude = (currentPoint.lat > coordinate.lat) !=
+                (previousPoint.lat > coordinate.lat)
+
+            if crossesLatitude {
+                let intersectionLongitude = (previousPoint.lng - currentPoint.lng) *
+                    (coordinate.lat - currentPoint.lat) /
+                    (previousPoint.lat - currentPoint.lat) +
+                    currentPoint.lng
+
+                if coordinate.lng < intersectionLongitude {
+                    isInside.toggle()
+                }
+            }
+
+            previousIndex = currentIndex
+        }
+
+        return isInside
+    }
 }
 
 
@@ -158,16 +243,17 @@ struct MapView: UIViewRepresentable {
     let showsMarkerOrder: Bool
 
     @AppStorage("dateLogTheme")
-    private var selectedThemeRawValue = DateLogTheme.pink.rawValue
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
 
     private var selectedTheme: DateLogTheme {
-        DateLogTheme(rawValue: selectedThemeRawValue) ?? .pink
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
     }
 
     @Binding var selectedCoordinate: CoordinateData?
     @Binding var selectedSavedPlace: DatePlace?
     @Binding var selectedPlaceName: String
     @Binding var selectedDistrictVisit: MapDistrictVisitSummary?
+    var onDistrictBubbleTap: (MapDistrictVisitSummary) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -219,6 +305,11 @@ struct MapView: UIViewRepresentable {
             )
         }
 
+        context.coordinator.updateDistrictBubble(
+            summary: showsHeatmap ? selectedDistrictVisit : nil,
+            mapView: uiView.mapView
+        )
+
         context.coordinator.updateSelectionMarker(
             coordinate: selectedCoordinate,
             placeName: selectedPlaceName,
@@ -241,12 +332,14 @@ struct MapView: UIViewRepresentable {
         private var savedMarkers: [NMFMarker] = []
         private var heatmapMarkers: [NMFMarker] = []
         private var districtOverlays: [NMFPolygonOverlay] = []
+        private let districtBubbleMarker = NMFMarker()
 
         private var lastCameraPlaceKey = ""
         private var lastSelectionCameraKey = ""
         private var lastMarkerPlaceKey = ""
         private var lastHeatmapPlaceKey = ""
         private var lastDistrictHeatmapKey = ""
+        private var lastDistrictBubbleKey = ""
 
         init(parent: MapView) {
             self.parent = parent
@@ -368,12 +461,11 @@ struct MapView: UIViewRepresentable {
                     lng: longitude
                 )
 
-                marker.iconImage = NMF_MARKER_IMAGE_PINK
-                marker.iconTintColor = PlaceCategoryNormalizer.uiColor(
-                    for: place.categoryName
+                marker.iconImage = NMFOverlayImage(
+                    image: categoryMarkerImage(for: place.categoryName)
                 )
-                marker.width = 30
-                marker.height = 38
+                marker.width = 32
+                marker.height = 42
                 marker.captionText = parent.showsMarkerOrder
                     ? "\(index + 1). \(place.name)"
                     : place.name
@@ -392,6 +484,44 @@ struct MapView: UIViewRepresentable {
 
                 marker.mapView = mapView
                 savedMarkers.append(marker)
+            }
+        }
+
+        private func categoryMarkerImage(for category: String) -> UIImage {
+            let size = CGSize(width: 32, height: 42)
+            let renderer = UIGraphicsImageRenderer(size: size)
+            let pinColor = PlaceCategoryNormalizer.uiColor(for: category)
+
+            return renderer.image { context in
+                let cgContext = context.cgContext
+                let bodyRect = CGRect(x: 5, y: 3, width: 22, height: 22)
+                let path = UIBezierPath(ovalIn: bodyRect)
+                path.move(to: CGPoint(x: 16, y: 39))
+                path.addLine(to: CGPoint(x: 9, y: 22))
+                path.addQuadCurve(
+                    to: CGPoint(x: 23, y: 22),
+                    controlPoint: CGPoint(x: 16, y: 29)
+                )
+                path.close()
+
+                cgContext.saveGState()
+                cgContext.setShadow(
+                    offset: CGSize(width: 0, height: 3),
+                    blur: 5,
+                    color: UIColor.black.withAlphaComponent(0.22).cgColor
+                )
+                pinColor.setFill()
+                path.fill()
+                cgContext.restoreGState()
+
+                UIColor.white.withAlphaComponent(0.90).setStroke()
+                path.lineWidth = 2
+                path.stroke()
+
+                UIColor.white.withAlphaComponent(0.88).setFill()
+                UIBezierPath(
+                    ovalIn: CGRect(x: 12, y: 10, width: 8, height: 8)
+                ).fill()
             }
         }
 
@@ -480,6 +610,7 @@ struct MapView: UIViewRepresentable {
                 }
 
                 let intensity = CGFloat(count) / CGFloat(maximumCount)
+                let center = districtCenter(of: district)
 
                 for points in district.polygons where points.count >= 3 {
                     let polygonPoints = naverPolygonPoints(from: points)
@@ -508,7 +639,9 @@ struct MapView: UIViewRepresentable {
                         self?.parent.selectedDistrictVisit = MapDistrictVisitSummary(
                             code: district.code,
                             name: district.displayName,
-                            visitCount: count
+                            visitCount: count,
+                            latitude: center.lat,
+                            longitude: center.lng
                         )
 
                         return true
@@ -520,6 +653,245 @@ struct MapView: UIViewRepresentable {
             }
 
             return true
+        }
+
+        func updateDistrictBubble(
+            summary: MapDistrictVisitSummary?,
+            mapView: NMFMapView
+        ) {
+            guard let summary else {
+                districtBubbleMarker.mapView = nil
+                lastDistrictBubbleKey = ""
+                return
+            }
+
+            let bubbleKey =
+                "\(summary.code)-\(summary.visitCount)-\(parent.selectedTheme.rawValue)"
+
+            if bubbleKey != lastDistrictBubbleKey {
+                lastDistrictBubbleKey = bubbleKey
+
+                let (image, anchor) = districtBubbleImage(
+                    name: summary.name,
+                    visitCount: summary.visitCount
+                )
+
+                districtBubbleMarker.iconImage = NMFOverlayImage(image: image)
+                districtBubbleMarker.anchor = anchor
+            }
+
+            districtBubbleMarker.position = NMGLatLng(
+                lat: summary.latitude,
+                lng: summary.longitude
+            )
+            districtBubbleMarker.zIndex = 2600
+            districtBubbleMarker.touchHandler = { [weak self] _ in
+                guard let summary = self?.parent.selectedDistrictVisit else {
+                    return true
+                }
+
+                self?.parent.onDistrictBubbleTap(summary)
+                return true
+            }
+            districtBubbleMarker.mapView = mapView
+        }
+
+        private func districtBubbleImage(
+            name: String,
+            visitCount: Int
+        ) -> (image: UIImage, anchor: CGPoint) {
+            let titleFont = UIFont(name: "Pretendard-Bold", size: 14)
+                ?? .systemFont(ofSize: 14, weight: .bold)
+            let subtitleFont = UIFont(name: "Pretendard-Medium", size: 12)
+                ?? .systemFont(ofSize: 12, weight: .medium)
+            let countFont = UIFont(name: "Pretendard-Bold", size: 12)
+                ?? .systemFont(ofSize: 12, weight: .bold)
+
+            let title = NSAttributedString(
+                string: name,
+                attributes: [
+                    .font: titleFont,
+                    .foregroundColor: UIColor.black.withAlphaComponent(0.86)
+                ]
+            )
+
+            let subtitle = NSMutableAttributedString()
+            subtitle.append(
+                NSAttributedString(
+                    string: "총 ",
+                    attributes: [
+                        .font: subtitleFont,
+                        .foregroundColor: UIColor.black.withAlphaComponent(0.58)
+                    ]
+                )
+            )
+            subtitle.append(
+                NSAttributedString(
+                    string: "\(visitCount)회",
+                    attributes: [
+                        .font: countFont,
+                        .foregroundColor: UIColor(parent.selectedTheme.primaryColor)
+                    ]
+                )
+            )
+            subtitle.append(
+                NSAttributedString(
+                    string: " 방문",
+                    attributes: [
+                        .font: subtitleFont,
+                        .foregroundColor: UIColor.black.withAlphaComponent(0.58)
+                    ]
+                )
+            )
+
+            let titleSize = title.size()
+            let subtitleSize = subtitle.size()
+            let horizontalPadding: CGFloat = 15
+            let verticalPadding: CGFloat = 10
+            let lineSpacing: CGFloat = 3
+            let tailWidth: CGFloat = 14
+            let tailHeight: CGFloat = 8
+            let shadowPadding: CGFloat = 14
+
+            let bubbleWidth = max(titleSize.width, subtitleSize.width)
+                + horizontalPadding * 2
+            let bubbleHeight = titleSize.height + lineSpacing + subtitleSize.height
+                + verticalPadding * 2
+            let imageSize = CGSize(
+                width: bubbleWidth + shadowPadding * 2,
+                height: bubbleHeight + tailHeight + shadowPadding * 2
+            )
+
+            let renderer = UIGraphicsImageRenderer(size: imageSize)
+
+            let image = renderer.image { context in
+                let bubbleRect = CGRect(
+                    x: shadowPadding,
+                    y: shadowPadding,
+                    width: bubbleWidth,
+                    height: bubbleHeight
+                )
+
+                let path = UIBezierPath(
+                    roundedRect: bubbleRect,
+                    cornerRadius: 13
+                )
+
+                let tailTipX = imageSize.width / 2
+                let tail = UIBezierPath()
+                tail.move(
+                    to: CGPoint(
+                        x: tailTipX - tailWidth / 2,
+                        y: bubbleRect.maxY - 1
+                    )
+                )
+                tail.addLine(
+                    to: CGPoint(
+                        x: tailTipX,
+                        y: bubbleRect.maxY + tailHeight
+                    )
+                )
+                tail.addLine(
+                    to: CGPoint(
+                        x: tailTipX + tailWidth / 2,
+                        y: bubbleRect.maxY - 1
+                    )
+                )
+                tail.close()
+                path.append(tail)
+
+                let cgContext = context.cgContext
+                cgContext.saveGState()
+                cgContext.setShadow(
+                    offset: CGSize(width: 0, height: 4),
+                    blur: 10,
+                    color: UIColor.black.withAlphaComponent(0.22).cgColor
+                )
+                UIColor.white.setFill()
+                path.fill()
+                cgContext.restoreGState()
+
+                title.draw(
+                    at: CGPoint(
+                        x: shadowPadding + (bubbleWidth - titleSize.width) / 2,
+                        y: shadowPadding + verticalPadding
+                    )
+                )
+                subtitle.draw(
+                    at: CGPoint(
+                        x: shadowPadding + (bubbleWidth - subtitleSize.width) / 2,
+                        y: shadowPadding + verticalPadding
+                            + titleSize.height + lineSpacing
+                    )
+                )
+            }
+
+            let anchor = CGPoint(
+                x: 0.5,
+                y: (shadowPadding + bubbleHeight + tailHeight) / imageSize.height
+            )
+
+            return (image, anchor)
+        }
+
+        private func districtCenter(of district: MapDistrict) -> NMGLatLng {
+            let largestPolygon = district.polygons.max {
+                polygonArea($0) < polygonArea($1)
+            }
+
+            guard
+                let largestPolygon,
+                let centroid = polygonCentroid(largestPolygon)
+            else {
+                return district.polygons.first?.first
+                    ?? NMGLatLng(lat: 37.5665, lng: 126.9780)
+            }
+
+            return centroid
+        }
+
+        private func polygonArea(_ points: [NMGLatLng]) -> Double {
+            guard points.count >= 3 else {
+                return 0
+            }
+
+            var doubledArea = 0.0
+
+            for index in points.indices {
+                let current = points[index]
+                let next = points[(index + 1) % points.count]
+                doubledArea += current.lng * next.lat - next.lng * current.lat
+            }
+
+            return abs(doubledArea) / 2
+        }
+
+        private func polygonCentroid(_ points: [NMGLatLng]) -> NMGLatLng? {
+            guard points.count >= 3 else {
+                return nil
+            }
+
+            var doubledArea = 0.0
+            var latitudeSum = 0.0
+            var longitudeSum = 0.0
+
+            for index in points.indices {
+                let current = points[index]
+                let next = points[(index + 1) % points.count]
+                let cross = current.lng * next.lat - next.lng * current.lat
+                doubledArea += cross
+                longitudeSum += (current.lng + next.lng) * cross
+                latitudeSum += (current.lat + next.lat) * cross
+            }
+
+            guard abs(doubledArea) > .ulpOfOne else {
+                return nil
+            }
+
+            return NMGLatLng(
+                lat: latitudeSum / (3 * doubledArea),
+                lng: longitudeSum / (3 * doubledArea)
+            )
         }
 
         private func naverPolygonPoints(

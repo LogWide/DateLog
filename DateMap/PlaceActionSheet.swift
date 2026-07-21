@@ -23,6 +23,13 @@ struct PlaceActionSheet: View {
 
     @Environment(\.dismiss) private var dismiss
 
+    @AppStorage("dateLogTheme")
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
+
+    private var selectedTheme: DateLogTheme {
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -44,8 +51,10 @@ struct PlaceActionSheet: View {
                     Text(placeName)
                 }
             }
+            .dateLogListBackground(selectedTheme)
             .navigationTitle("장소 선택")
             .navigationBarTitleDisplayMode(.inline)
+            .tint(selectedTheme.primaryColor)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("취소") {

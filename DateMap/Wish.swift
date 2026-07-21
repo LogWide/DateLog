@@ -8,6 +8,24 @@
 import Foundation
 import SwiftData
 
+/// 위시를 묶어 보는 폴더. 위시가 없어도 폴더만 먼저 만들 수 있다.
+@Model
+final class WishFolder {
+    var id: UUID
+    var name: String
+    var createdAt: Date
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.name = name
+        self.createdAt = createdAt
+    }
+}
+
 @Model
 final class Wish {
     var id: UUID
@@ -21,6 +39,9 @@ final class Wish {
     var isVisited: Bool
     var visitedDate: Date?
 
+    /// 위시를 묶어 보는 폴더 이름. 비어 있으면 폴더 없음.
+    var folder: String = ""
+
     init(
         id: UUID = UUID(),
         name: String,
@@ -31,7 +52,8 @@ final class Wish {
         memo: String = "",
         createdAt: Date = Date(),
         isVisited: Bool = false,
-        visitedDate: Date? = nil
+        visitedDate: Date? = nil,
+        folder: String = ""
     ) {
         self.id = id
         self.name = name
@@ -43,5 +65,6 @@ final class Wish {
         self.createdAt = createdAt
         self.isVisited = isVisited
         self.visitedDate = visitedDate
+        self.folder = folder
     }
 }

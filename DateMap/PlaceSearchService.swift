@@ -12,7 +12,9 @@ enum PlaceSearchService {
         "https://datelog-place-search.k2mkj.workers.dev"
 
     static func search(
-        query: String
+        query: String,
+        display: Int = 5,
+        start: Int = 1
     ) async throws -> [PlaceSearchResult] {
         let cleanQuery = query.trimmingCharacters(
             in: .whitespacesAndNewlines
@@ -34,6 +36,14 @@ enum PlaceSearchService {
             URLQueryItem(
                 name: "query",
                 value: cleanQuery
+            ),
+            URLQueryItem(
+                name: "display",
+                value: "\(display)"
+            ),
+            URLQueryItem(
+                name: "start",
+                value: "\(start)"
             )
         ]
 

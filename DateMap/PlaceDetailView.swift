@@ -5,15 +5,28 @@ import UIKit
 
 struct PlaceDetailView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
     @AppStorage("dateLogTheme")
-    private var selectedThemeRawValue = DateLogTheme.pink.rawValue
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
 
     let place: DatePlace
+
+    @Query private var wishes: [Wish]
 
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var isImportingPhotos = false
     @State private var errorMessage: String?
     @State private var selectedPhoto: DatePhoto?
+    @State private var isShowingDeleteConfirm = false
+
+    /// 이 장소가 위시의 방문 완료로 만들어진 경우 해당 위시 (저장된 위시 ID로 정확히 연결)
+    private var linkedVisitedWish: Wish? {
+        guard let sourceWishID = place.sourceWishID else {
+            return nil
+        }
+
+        return wishes.first { $0.id == sourceWishID && $0.isVisited }
+    }
 
     private let builtInCategories: [(name: String, emoji: String)] = [
         ("식당", "🍽️"),
@@ -45,7 +58,25 @@ struct PlaceDetailView: View {
     }
 
     private var selectedTheme: DateLogTheme {
-        DateLogTheme(rawValue: selectedThemeRawValue) ?? .pink
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
+    }
+
+    /// 장소를 삭제하고, 이 장소로 방문 완료됐던 위시가 있으면 완료를 해제한다.
+    private func deletePlace() {
+        if let wish = linkedVisitedWish {
+            wish.isVisited = false
+            wish.visitedDate = nil
+        }
+
+        modelContext.delete(place)
+
+        do {
+            try modelContext.save()
+        } catch {
+            print("장소 삭제 실패: \(error)")
+        }
+
+        dismiss()
     }
 
     private var sortedPhotos: [DatePhoto] {
@@ -67,11 +98,46 @@ struct PlaceDetailView: View {
             VStack(alignment: .leading, spacing: 20) {
                 placeInformationSection
                 photoSection
+
+                Button(role: .destructive) {
+                    isShowingDeleteConfirm = true
+                } label: {
+                    Label("장소 삭제", systemImage: "trash")
+                        .font(.pretendard(size: 15, weight: .semiBold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 13)
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
             }
             .padding()
         }
+        .alert(
+            "장소를 삭제할까요?",
+            isPresented: $isShowingDeleteConfirm
+        ) {
+            Button("삭제", role: .destructive) {
+                deletePlace()
+            }
+
+            Button("취소", role: .cancel) {}
+        } message: {
+            Text(
+                linkedVisitedWish != nil
+                    ? "이 장소가 데이트에서 삭제되고, 위시의 방문 완료 기록도 함께 해제됩니다."
+                    : "이 장소가 데이트에서 삭제됩니다."
+            )
+        }
+        .background(selectedTheme.backgroundColor)
         .navigationTitle(place.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(selectedTheme.color, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(
+            selectedTheme.navigationColorScheme,
+            for: .navigationBar
+        )
+        .dateLogBackChevron(selectedTheme)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 PhotosPicker(

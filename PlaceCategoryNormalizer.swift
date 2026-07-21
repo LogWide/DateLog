@@ -117,23 +117,23 @@ enum PlaceCategoryNormalizer {
     static func color(for category: String) -> Color {
         switch categoryName(from: category) {
         case "식당":
-            return Color(red: 0.93, green: 0.28, blue: 0.24)
+            return Color(red: 0.82, green: 0.04, blue: 0.02)
         case "카페":
-            return Color(red: 0.62, green: 0.38, blue: 0.18)
+            return Color(red: 0.86, green: 0.26, blue: 0.00)
         case "술":
-            return Color(red: 0.56, green: 0.32, blue: 0.84)
+            return Color(red: 0.78, green: 0.58, blue: 0.00)
         case "영화":
-            return Color(red: 0.22, green: 0.40, blue: 0.90)
+            return Color(red: 0.02, green: 0.50, blue: 0.12)
         case "쇼핑":
-            return Color(red: 0.93, green: 0.38, blue: 0.64)
+            return Color(red: 0.00, green: 0.34, blue: 0.82)
         case "산책":
-            return Color(red: 0.18, green: 0.62, blue: 0.34)
+            return Color(red: 0.02, green: 0.10, blue: 0.68)
         case "숙소":
-            return Color(red: 0.06, green: 0.48, blue: 0.62)
+            return Color(red: 0.40, green: 0.02, blue: 0.70)
         case "드라이브":
-            return Color(red: 0.95, green: 0.58, blue: 0.16)
+            return Color(red: 0.76, green: 0.00, blue: 0.42)
         default:
-            return Color(red: 0.42, green: 0.45, blue: 0.52)
+            return Color(red: 0.00, green: 0.48, blue: 0.48)
         }
     }
 

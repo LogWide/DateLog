@@ -18,6 +18,15 @@ private struct SavedPlaceCategory: Codable, Hashable, Identifiable {
     }
 }
 
+private enum CategoryEmojiCatalog {
+    static let emojis = [
+        "🍽️", "☕", "🍺", "🍷", "🍰", "🍜",
+        "🎬", "🎤", "🎨", "🎡", "🎮", "🛍️",
+        "🌳", "🌊", "🌙", "🏨", "🚗", "🚇",
+        "📍", "✨", "💐", "❤️", "🔥", "⭐"
+    ]
+}
+
 struct AddPlaceView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -37,6 +46,7 @@ struct AddPlaceView: View {
     @State private var customCategoryEmoji = "✨"
     @State private var savedCustomCategories: [SavedPlaceCategory] = []
     @State private var isShowingCategoryManager = false
+    @State private var isShowingEmojiPicker = false
 
     @State private var latitude: Double?
     @State private var longitude: Double?
@@ -44,6 +54,9 @@ struct AddPlaceView: View {
 
     @State private var searchResults: [PlaceSearchResult] = []
     @State private var isSearching = false
+    @State private var isLoadingMoreSearchResults = false
+    @State private var nextSearchStart = 1
+    @State private var canLoadMoreSearchResults = false
     @State private var searchErrorMessage: String?
     @State private var searchTask: Task<Void, Never>?
 
@@ -53,6 +66,14 @@ struct AddPlaceView: View {
     @State private var selectedWish: Wish?
 
     @State private var shouldSkipNextSearch = false
+    @State private var usesManualPlaceOrder = true
+
+    @AppStorage("dateLogTheme")
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
+
+    private var selectedTheme: DateLogTheme {
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
+    }
 
     private var availableWishes: [Wish] {
         wishes.filter { !$0.isVisited }
@@ -136,9 +157,17 @@ struct AddPlaceView: View {
                                     .foregroundStyle(.primary)
 
                                 if !result.category.isEmpty {
-                                    Text(result.category)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                    HStack(spacing: 6) {
+                                        categoryColorDot(
+                                            PlaceCategoryNormalizer.categoryName(
+                                                from: result.category
+                                            )
+                                        )
+
+                                        Text(result.category)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
 
                                 Text(result.displayAddress)
@@ -155,6 +184,32 @@ struct AddPlaceView: View {
                         .buttonStyle(.plain)
                     }
 
+                    if canLoadMoreSearchResults || isLoadingMoreSearchResults {
+                        Button {
+                            Task {
+                                await loadMoreSearchResults()
+                            }
+                        } label: {
+                            HStack {
+                                Spacer()
+
+                                if isLoadingMoreSearchResults {
+                                    ProgressView()
+                                } else {
+                                    Label(
+                                        "검색 결과 더보기",
+                                        systemImage: "chevron.down.circle"
+                                    )
+                                    .font(.body.weight(.semibold))
+                                }
+
+                                Spacer()
+                            }
+                            .padding(.vertical, 6)
+                        }
+                        .disabled(isLoadingMoreSearchResults)
+                    }
+
                     if let searchErrorMessage {
                         Text(searchErrorMessage)
                             .font(.caption)
@@ -164,21 +219,28 @@ struct AddPlaceView: View {
 
                 Section("카테고리") {
                     Picker("기본 카테고리", selection: $categoryName) {
-                        Text("🍽️ 식당").tag("식당")
-                        Text("☕ 카페").tag("카페")
-                        Text("🍺 술").tag("술")
-                        Text("🎬 영화").tag("영화")
-                        Text("🛍️ 쇼핑").tag("쇼핑")
-                        Text("🌳 산책").tag("산책")
-                        Text("🏨 숙소").tag("숙소")
-                        Text("🚗 드라이브").tag("드라이브")
+                        categoryPickerOption("식당").tag("식당")
+                        categoryPickerOption("카페").tag("카페")
+                        categoryPickerOption("술").tag("술")
+                        categoryPickerOption("영화").tag("영화")
+                        categoryPickerOption("쇼핑").tag("쇼핑")
+                        categoryPickerOption("산책").tag("산책")
+                        categoryPickerOption("숙소").tag("숙소")
+                        categoryPickerOption("드라이브").tag("드라이브")
 
                         ForEach(savedCustomCategories) { category in
-                            Text("\(category.emoji) \(category.name)")
-                                .tag(category.name)
+                            HStack(spacing: 8) {
+                                categoryColorDot(category.name)
+                                Text("\(category.emoji) \(category.name)")
+                            }
+                            .tag(category.name)
                         }
 
-                        Text("⭐ 직접 입력").tag("__custom__")
+                        HStack(spacing: 8) {
+                            categoryColorDot(PlaceCategoryNormalizer.defaultCategory)
+                            Text("⭐ 직접 입력")
+                        }
+                        .tag("__custom__")
                     }
                     .onChange(of: categoryName) { _, newValue in
                         isShowingCustomCategory = (newValue == "__custom__")
@@ -199,7 +261,25 @@ struct AddPlaceView: View {
                     }
 
                     if isShowingCustomCategory {
-                        TextField("이모지", text: $customCategoryEmoji)
+                        Button {
+                            isShowingEmojiPicker = true
+                        } label: {
+                            HStack {
+                                Text("이모지")
+                                    .foregroundStyle(.primary)
+
+                                Spacer()
+
+                                Text(customCategoryEmoji)
+                                    .font(.title2)
+
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+
                         TextField("카테고리명", text: $customCategoryName)
                     }
                 }
@@ -211,6 +291,18 @@ struct AddPlaceView: View {
                         axis: .vertical
                     )
                     .lineLimit(2...5)
+                }
+
+                if history.type == .plan {
+                    Section("계획 옵션") {
+                        Toggle("순서 지정", isOn: $usesManualPlaceOrder)
+
+                        if !usesManualPlaceOrder {
+                            Text("저장 후 계획 상세에서 AI 순서 추천으로 코스를 정리할 수 있습니다.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
 
                 if latitude != nil && longitude != nil {
@@ -226,8 +318,10 @@ struct AddPlaceView: View {
                     }
                 }
             }
+            .dateLogListBackground(selectedTheme)
             .navigationTitle("장소 추가")
             .navigationBarTitleDisplayMode(.inline)
+            .tint(selectedTheme.primaryColor)
             .toolbar {
                 ToolbarItem(
                     placement: .cancellationAction
@@ -279,6 +373,11 @@ struct AddPlaceView: View {
                     persistCustomCategories()
                 }
             }
+            .sheet(isPresented: $isShowingEmojiPicker) {
+                EmojiPickerView(selectedEmoji: $customCategoryEmoji)
+                    .presentationDetents([.medium])
+                    .presentationDragIndicator(.visible)
+            }
             .onAppear {
                 loadCustomCategories()
             }
@@ -292,6 +391,19 @@ struct AddPlaceView: View {
         name.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
+    }
+
+    private func categoryPickerOption(_ category: String) -> some View {
+        HStack(spacing: 8) {
+            categoryColorDot(category)
+            Text("\(PlaceCategoryNormalizer.emoji(for: category)) \(category)")
+        }
+    }
+
+    private func categoryColorDot(_ category: String) -> some View {
+        Circle()
+            .fill(PlaceCategoryNormalizer.color(for: category))
+            .frame(width: 9, height: 9)
     }
 
     private var cleanMemo: String {
@@ -313,6 +425,9 @@ struct AddPlaceView: View {
         latitude = nil
         longitude = nil
         selectedAddress = ""
+        searchResults = []
+        nextSearchStart = 1
+        canLoadMoreSearchResults = false
         searchErrorMessage = nil
 
         let trimmedName = newValue.trimmingCharacters(
@@ -321,6 +436,8 @@ struct AddPlaceView: View {
 
         guard trimmedName.count >= 2 else {
             searchResults = []
+            nextSearchStart = 1
+            canLoadMoreSearchResults = false
             isSearching = false
             return
         }
@@ -353,7 +470,9 @@ struct AddPlaceView: View {
 
         do {
             let results = try await PlaceSearchService.search(
-                query: query
+                query: query,
+                display: 10,
+                start: 1
             )
 
             guard !Task.isCancelled else {
@@ -361,6 +480,8 @@ struct AddPlaceView: View {
             }
 
             searchResults = results
+            nextSearchStart = results.count + 1
+            canLoadMoreSearchResults = !results.isEmpty
 
             if results.isEmpty {
                 searchErrorMessage = "검색 결과가 없습니다."
@@ -371,8 +492,46 @@ struct AddPlaceView: View {
             }
 
             searchResults = []
+            nextSearchStart = 1
+            canLoadMoreSearchResults = false
             searchErrorMessage =
                 error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func loadMoreSearchResults() async {
+        guard
+            !cleanName.isEmpty,
+            !isLoadingMoreSearchResults,
+            canLoadMoreSearchResults
+        else {
+            return
+        }
+
+        isLoadingMoreSearchResults = true
+        searchErrorMessage = nil
+
+        defer {
+            isLoadingMoreSearchResults = false
+        }
+
+        do {
+            let results = try await PlaceSearchService.search(
+                query: cleanName,
+                display: 10,
+                start: nextSearchStart
+            )
+            let existingIDs = Set(searchResults.map(\.id))
+            let uniqueResults = results.filter {
+                !existingIDs.contains($0.id)
+            }
+
+            searchResults.append(contentsOf: uniqueResults)
+            nextSearchStart += results.count
+            canLoadMoreSearchResults = !results.isEmpty && !uniqueResults.isEmpty
+        } catch {
+            searchErrorMessage = error.localizedDescription
         }
     }
 
@@ -395,6 +554,8 @@ struct AddPlaceView: View {
         selectedAddress = result.displayAddress
 
         searchResults = []
+        nextSearchStart = 1
+        canLoadMoreSearchResults = false
         searchErrorMessage = nil
     }
 
@@ -407,6 +568,8 @@ struct AddPlaceView: View {
         memo = wish.memo
         selectedAddress = wish.address
         searchResults = []
+        nextSearchStart = 1
+        canLoadMoreSearchResults = false
         searchErrorMessage = nil
 
         if !wish.category.isEmpty {
@@ -575,6 +738,13 @@ private struct WishPlaceSelectionView: View {
     let wishes: [Wish]
     let onSelect: (Wish) -> Void
 
+    @AppStorage("dateLogTheme")
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
+
+    private var selectedTheme: DateLogTheme {
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -613,8 +783,10 @@ private struct WishPlaceSelectionView: View {
                     }
                 }
             }
+            .dateLogListBackground(selectedTheme)
             .navigationTitle("위시리스트")
             .navigationBarTitleDisplayMode(.inline)
+            .tint(selectedTheme.primaryColor)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("닫기") {
@@ -632,14 +804,38 @@ private struct SavedCategoryManagerView: View {
     @Binding var categories: [SavedPlaceCategory]
     let onSave: () -> Void
 
+    @AppStorage("dateLogTheme")
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
+
+    private var selectedTheme: DateLogTheme {
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
+    }
+
     var body: some View {
         NavigationStack {
             List {
                 ForEach($categories) { $category in
                     HStack(spacing: 12) {
-                        TextField("이모지", text: $category.emoji)
-                            .frame(width: 56)
-                            .multilineTextAlignment(.center)
+                        Menu {
+                            ForEach(CategoryEmojiCatalog.emojis, id: \.self) { emoji in
+                                Button {
+                                    category.emoji = emoji
+                                } label: {
+                                    Text(emoji)
+                                }
+                            }
+                        } label: {
+                            Text(category.emoji)
+                                .font(.title2)
+                                .frame(width: 56, height: 36)
+                                .background(Color.secondary.opacity(0.10))
+                                .clipShape(
+                                    RoundedRectangle(
+                                        cornerRadius: 10,
+                                        style: .continuous
+                                    )
+                                )
+                        }
 
                         TextField("카테고리명", text: $category.name)
                     }
@@ -649,8 +845,10 @@ private struct SavedCategoryManagerView: View {
                     categories.remove(atOffsets: offsets)
                 }
             }
+            .dateLogListBackground(selectedTheme)
             .navigationTitle("사용자 카테고리 관리")
             .navigationBarTitleDisplayMode(.inline)
+            .tint(selectedTheme.primaryColor)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("취소") {
@@ -661,6 +859,67 @@ private struct SavedCategoryManagerView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("완료") {
                         onSave()
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct EmojiPickerView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    @Binding var selectedEmoji: String
+
+    @AppStorage("dateLogTheme")
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
+
+    private var selectedTheme: DateLogTheme {
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
+    }
+
+    private let columns = Array(
+        repeating: GridItem(.flexible(), spacing: 12),
+        count: 6
+    )
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 12) {
+                    ForEach(CategoryEmojiCatalog.emojis, id: \.self) { emoji in
+                        Button {
+                            selectedEmoji = emoji
+                            dismiss()
+                        } label: {
+                            Text(emoji)
+                                .font(.system(size: 30))
+                                .frame(width: 44, height: 44)
+                                .background(
+                                    selectedEmoji == emoji
+                                        ? Color.accentColor.opacity(0.18)
+                                        : Color.secondary.opacity(0.08)
+                                )
+                                .clipShape(
+                                    RoundedRectangle(
+                                        cornerRadius: 12,
+                                        style: .continuous
+                                    )
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(20)
+            }
+            .background(selectedTheme.backgroundColor)
+            .navigationTitle("이모지 선택")
+            .navigationBarTitleDisplayMode(.inline)
+            .tint(selectedTheme.primaryColor)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("닫기") {
                         dismiss()
                     }
                 }

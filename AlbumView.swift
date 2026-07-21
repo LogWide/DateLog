@@ -31,6 +31,17 @@ private struct AlbumPhotoItem: Identifiable, Hashable {
 }
 
 struct AlbumView: View {
+    let title: String
+    let dateRange: ClosedRange<Date>?
+
+    init(
+        title: String = "앨범",
+        dateRange: ClosedRange<Date>? = nil
+    ) {
+        self.title = title
+        self.dateRange = dateRange
+    }
+
     @Query(sort: \DatePhoto.createdAt, order: .reverse)
     private var placePhotos: [DatePhoto]
 
@@ -40,6 +51,13 @@ struct AlbumView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedItem: AlbumPhotoItem?
+
+    @AppStorage("dateLogTheme")
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
+
+    private var selectedTheme: DateLogTheme {
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
+    }
 
     private let columns = [
         GridItem(.flexible(), spacing: 3),
@@ -56,10 +74,19 @@ struct AlbumView: View {
             let place = photo.place
             let history = place?.history
 
+            if let dateRange {
+                guard
+                    let historyDate = history?.date,
+                    dateRange.contains(historyDate)
+                else {
+                    return nil
+                }
+            }
+
             return AlbumPhotoItem(
                 source: .placePhoto(photo.id),
                 imageData: imageData,
-                date: photo.createdAt,
+                date: history?.date ?? photo.createdAt,
                 title: history?.title ?? place?.name ?? "장소 사진",
                 subtitle: place?.name ?? "장소 정보 없음",
                 history: history,
@@ -67,7 +94,8 @@ struct AlbumView: View {
             )
         }
 
-        let diaryItems = diaries.compactMap { diary -> AlbumPhotoItem? in
+        // 기간 앨범은 데이트 사진만 모아 보여준다
+        let diaryItems = dateRange != nil ? [] : diaries.compactMap { diary -> AlbumPhotoItem? in
             guard let imageData = diary.photoData else {
                 return nil
             }
@@ -95,7 +123,11 @@ struct AlbumView: View {
                     ContentUnavailableView(
                         "앨범이 비어 있습니다",
                         systemImage: "photo.on.rectangle",
-                        description: Text("데이트 장소나 일기에 사진을 추가하면 여기에 모입니다.")
+                        description: Text(
+                            dateRange == nil
+                                ? "데이트 장소나 일기에 사진을 추가하면 여기에 모입니다."
+                                : "이 기간의 데이트에 추가된 사진이 없습니다."
+                        )
                     )
                 } else {
                     ScrollView {
@@ -113,16 +145,25 @@ struct AlbumView: View {
                         }
                         .padding(3)
                     }
-                    .background(Color(uiColor: .systemBackground))
+                    .background(selectedTheme.backgroundColor)
                 }
             }
-            .navigationTitle("앨범")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(selectedTheme.backgroundColor)
+            .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(selectedTheme.color, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(
+                selectedTheme.navigationColorScheme,
+                for: .navigationBar
+            )
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("닫기") {
                         dismiss()
                     }
+                    .foregroundStyle(selectedTheme.navigationTextColor)
                 }
             }
             .fullScreenCover(item: $selectedItem) { item in

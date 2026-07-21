@@ -25,9 +25,10 @@ struct DateMapApp: App {
             DateHistory.self,
             DatePlace.self,
             DatePhoto.self,
+            DateComment.self,
             Diary.self,
-            Memo.self,
-            Wish.self
+            Wish.self,
+            WishFolder.self
         ])
 
         let configuration = ModelConfiguration(

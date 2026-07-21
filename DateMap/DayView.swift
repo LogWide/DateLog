@@ -14,6 +14,13 @@ struct DayView: View {
 
     @Environment(\.modelContext) private var modelContext
 
+    @AppStorage("dateLogTheme")
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
+
+    private var selectedTheme: DateLogTheme {
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
+    }
+
     @AppStorage("relationshipStartDate")
     private var relationshipStartDateInterval = Date().timeIntervalSince1970
 
@@ -34,17 +41,11 @@ struct DayView: View {
 
     @Query(sort: \DateHistory.date) private var allHistories: [DateHistory]
     @Query(sort: \Diary.createdAt) private var allDiaries: [Diary]
-    @Query(sort: \Memo.createdAt) private var allMemos: [Memo]
 
     @State private var showingAddDateHistory = false
     @State private var showingAddDiary = false
     @State private var selectedDiary: Diary?
     @State private var diaryPendingDeletion: Diary?
-
-    @State private var newMemoText = ""
-    @State private var isAddingMemo = false
-    @State private var selectedMemo: Memo?
-    @State private var memoPendingDeletion: Memo?
 
     var body: some View {
         ScrollView {
@@ -87,65 +88,19 @@ struct DayView: View {
                     }
                 }
 
-                daySection(
-                    title: "메모",
-                    systemImage: "note.text"
-                ) {
-                    VStack(spacing: 12) {
-                        ForEach(memosForSelectedDate) { memo in
-                            memoCard(memo: memo)
-                        }
-
-                        if isAddingMemo {
-                            VStack(alignment: .leading, spacing: 10) {
-                                TextField("메모를 입력하세요", text: $newMemoText, axis: .vertical)
-                                    .textFieldStyle(.roundedBorder)
-
-                                HStack {
-                                    Spacer()
-
-                                    Button("취소") {
-                                        newMemoText = ""
-                                        isAddingMemo = false
-                                    }
-
-                                    Button("저장") {
-                                        let text = newMemoText.trimmingCharacters(in: .whitespacesAndNewlines)
-                                        guard !text.isEmpty else { return }
-
-                                        let memo = Memo(date: date, content: text)
-                                        modelContext.insert(memo)
-
-                                        do {
-                                            try modelContext.save()
-                                            newMemoText = ""
-                                            isAddingMemo = false
-                                        } catch {
-                                            print("메모 저장 실패: \(error)")
-                                        }
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                }
-                            }
-                            .padding(16)
-                            .background(Color(uiColor: .secondarySystemGroupedBackground))
-                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        } else {
-                            emptySectionButton(
-                                title: "메모 추가",
-                                systemImage: "plus.circle"
-                            ) {
-                                isAddingMemo = true
-                            }
-                        }
-                    }
-                }
             }
             .padding(16)
         }
-        .background(Color(uiColor: .systemGroupedBackground))
+        .background(selectedTheme.backgroundColor)
         .navigationTitle(navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(selectedTheme.color, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(
+            selectedTheme.navigationColorScheme,
+            for: .navigationBar
+        )
+        .dateLogBackChevron(selectedTheme)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -160,12 +115,6 @@ struct DayView: View {
                     } label: {
                         Label("일기 추가", systemImage: "book.closed.fill")
                     }
-
-                    Button {
-                        isAddingMemo = true
-                    } label: {
-                        Label("메모 추가", systemImage: "note.text")
-                    }
                 } label: {
                     Image(systemName: "plus")
                 }
@@ -179,9 +128,6 @@ struct DayView: View {
         }
         .sheet(item: $selectedDiary) { diary in
             AddDiaryView(date: diary.date, diary: diary)
-        }
-        .sheet(item: $selectedMemo) { memo in
-            AddMemoView(date: memo.date, memo: memo)
         }
         .alert(
             "일기를 삭제할까요?",
@@ -205,38 +151,10 @@ struct DayView: View {
         } message: { _ in
             Text("삭제한 일기는 복구할 수 없습니다.")
         }
-        .alert(
-            "메모를 삭제할까요?",
-            isPresented: Binding(
-                get: { memoPendingDeletion != nil },
-                set: { isPresented in
-                    if !isPresented {
-                        memoPendingDeletion = nil
-                    }
-                }
-            ),
-            presenting: memoPendingDeletion
-        ) { memo in
-            Button("삭제", role: .destructive) {
-                deleteMemo(memo)
-            }
-
-            Button("취소", role: .cancel) {
-                memoPendingDeletion = nil
-            }
-        } message: { _ in
-            Text("삭제한 메모는 복구할 수 없습니다.")
-        }
     }
 
     private var diariesForSelectedDate: [Diary] {
         allDiaries.filter {
-            Calendar.current.isDate($0.date, inSameDayAs: date)
-        }
-    }
-
-    private var memosForSelectedDate: [Memo] {
-        allMemos.filter {
             Calendar.current.isDate($0.date, inSameDayAs: date)
         }
     }
@@ -296,7 +214,8 @@ struct DayView: View {
         } label: {
             HStack(spacing: 14) {
                 Group {
-                    if let imageData = history.coverImageData,
+                    if history.type == .record,
+                       let imageData = history.coverImageData,
                        let uiImage = UIImage(data: imageData) {
                         Image(uiImage: uiImage)
                             .resizable()
@@ -329,10 +248,14 @@ struct DayView: View {
                         .foregroundStyle(.primary)
                         .lineLimit(1)
 
-                    Text(history.memo.isEmpty ? "메모 없음" : history.memo)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                    if let latestComment = history.comments.max(
+                        by: { $0.createdAt < $1.createdAt }
+                    ) {
+                        Text(latestComment.content)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
 
                     HStack(spacing: 8) {
                         Label(
@@ -344,6 +267,13 @@ struct DayView: View {
                             "장소 \(history.places.count)곳",
                             systemImage: "mappin.and.ellipse"
                         )
+
+                        if !history.comments.isEmpty {
+                            Label(
+                                "댓글 \(history.comments.count)개",
+                                systemImage: "text.bubble"
+                            )
+                        }
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -445,17 +375,6 @@ struct DayView: View {
             diaryPendingDeletion = nil
         } catch {
             print("일기 삭제 실패: \(error)")
-        }
-    }
-
-    private func deleteMemo(_ memo: Memo) {
-        modelContext.delete(memo)
-
-        do {
-            try modelContext.save()
-            memoPendingDeletion = nil
-        } catch {
-            print("메모 삭제 실패: \(error)")
         }
     }
 
@@ -563,42 +482,4 @@ struct DayView: View {
         return formatter.string(from: date)
     }
 
-    private func memoCard(memo: Memo) -> some View {
-        Button {
-            selectedMemo = memo
-        } label: {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(memo.content)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                HStack(spacing: 6) {
-                    Text(memo.createdAt, format: .dateTime.year().month().day().hour().minute())
-
-                    if memo.updatedAt > memo.createdAt {
-                        Text("수정됨")
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(uiColor: .secondarySystemGroupedBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .contextMenu {
-            Button {
-                selectedMemo = memo
-            } label: {
-                Label("수정", systemImage: "pencil")
-            }
-
-            Button(role: .destructive) {
-                memoPendingDeletion = memo
-            } label: {
-                Label("삭제", systemImage: "trash")
-            }
-        }
-    }
 }

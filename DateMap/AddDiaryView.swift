@@ -16,6 +16,13 @@ struct AddDiaryView: View {
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var photoData: Data?
 
+    @AppStorage("dateLogTheme")
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
+
+    private var selectedTheme: DateLogTheme {
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
+    }
+
     init(date: Date, diary: Diary? = nil) {
         self.date = date
         self.diary = diary
@@ -120,7 +127,7 @@ struct AddDiaryView: View {
                 }
                 .padding(16)
             }
-            .background(Color(uiColor: .systemGroupedBackground))
+            .background(selectedTheme.backgroundColor)
             .onChange(of: selectedPhotoItem) { _, newItem in
                 guard let newItem else { return }
 

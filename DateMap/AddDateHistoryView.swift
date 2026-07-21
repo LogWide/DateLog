@@ -17,13 +17,23 @@ struct AddDateHistoryView: View {
     @State private var entryMode: EntryMode = .record
     @State private var title = ""
     @State private var selectedDate: Date
-    @State private var memo = ""
     @State private var selectedCoverImageData: Data?
     @State private var selectedPhotoItem: PhotosPickerItem?
 
-    init(initialDate: Date = Date()) {
+    @AppStorage("dateLogTheme")
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
+
+    private var selectedTheme: DateLogTheme {
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
+    }
+
+    init(
+        initialDate: Date = Date(),
+        startsAsPlan: Bool = false
+    ) {
         self.initialDate = initialDate
         _selectedDate = State(initialValue: initialDate)
+        _entryMode = State(initialValue: startsAsPlan ? .plan : .record)
     }
 
     var body: some View {
@@ -50,43 +60,41 @@ struct AddDateHistoryView: View {
                     .environment(\.locale, Locale(identifier: "ko_KR"))
                 }
 
-                Section("메모") {
-                    TextEditor(text: $memo)
-                        .frame(minHeight: 140)
-                }
+                if entryMode == .record {
+                    Section("대표사진") {
+                        if selectedCoverImageData != nil {
+                            Label("대표사진이 선택되었습니다.", systemImage: "photo.fill")
+                                .foregroundStyle(.green)
+                        } else {
+                            Label("대표사진 없음", systemImage: "photo")
+                                .foregroundStyle(.secondary)
+                        }
 
-                Section("대표사진") {
-                    if selectedCoverImageData != nil {
-                        Label("대표사진이 선택되었습니다.", systemImage: "photo.fill")
-                            .foregroundStyle(.green)
-                    } else {
-                        Label("대표사진 없음", systemImage: "photo")
-                            .foregroundStyle(.secondary)
-                    }
+                        PhotosPicker(
+                            selection: $selectedPhotoItem,
+                            matching: .images
+                        ) {
+                            Label("새 사진 추가", systemImage: "camera")
+                        }
 
-                    PhotosPicker(
-                        selection: $selectedPhotoItem,
-                        matching: .images
-                    ) {
-                        Label("새 사진 추가", systemImage: "camera")
-                    }
-
-
-                    if selectedCoverImageData != nil {
-                        Button(role: .destructive) {
-                            selectedCoverImageData = nil
-                        } label: {
-                            Label("대표사진 제거", systemImage: "trash")
+                        if selectedCoverImageData != nil {
+                            Button(role: .destructive) {
+                                selectedCoverImageData = nil
+                            } label: {
+                                Label("대표사진 제거", systemImage: "trash")
+                            }
                         }
                     }
                 }
             }
+            .dateLogListBackground(selectedTheme)
             .navigationTitle(
                 entryMode == .plan
                 ? "데이트 계획 추가"
                 : "데이트 기록 추가"
             )
             .navigationBarTitleDisplayMode(.inline)
+            .tint(selectedTheme.primaryColor)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("취소") {
@@ -101,7 +109,18 @@ struct AddDateHistoryView: View {
                     .disabled(cleanTitle.isEmpty)
                 }
             }
+            .onChange(of: entryMode) { _, newMode in
+                if newMode == .plan {
+                    selectedCoverImageData = nil
+                    selectedPhotoItem = nil
+                }
+            }
             .task(id: selectedPhotoItem) {
+                guard entryMode == .record else {
+                    selectedPhotoItem = nil
+                    return
+                }
+
                 guard let selectedPhotoItem else { return }
 
                 if
@@ -129,10 +148,8 @@ struct AddDateHistoryView: View {
         let history = DateHistory(
             title: cleanTitle,
             date: selectedDate,
-            memo: memo.trimmingCharacters(
-                in: .whitespacesAndNewlines
-            ),
-            coverImageData: selectedCoverImageData,
+            memo: "",
+            coverImageData: entryMode == .record ? selectedCoverImageData : nil,
             type: entryMode == .plan ? .plan : .record
         )
 

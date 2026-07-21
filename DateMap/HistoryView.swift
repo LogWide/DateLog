@@ -30,11 +30,17 @@ private struct TimelineDayGroup: Identifiable {
     let id: Date
     let histories: [DateHistory]
     let diaries: [Diary]
-    let memos: [Memo]
 
     var isEmpty: Bool {
-        histories.isEmpty && diaries.isEmpty && memos.isEmpty
+        histories.isEmpty && diaries.isEmpty
     }
+}
+
+private struct UpcomingAnniversary {
+    let label: String
+    let remainingDays: Int
+    let periodStart: Date
+    let periodEnd: Date
 }
 
 private enum KoreanHolidayCalendar {
@@ -217,6 +223,12 @@ private enum KoreanHolidayCalendar {
 struct HistoryView: View {
     @Environment(\.modelContext) private var modelContext
 
+    @Binding private var quickAddTargetDate: Date?
+
+    init(quickAddTargetDate: Binding<Date?> = .constant(nil)) {
+        _quickAddTargetDate = quickAddTargetDate
+    }
+
     @Query(
         sort: \DateHistory.date,
         order: .reverse
@@ -226,16 +238,20 @@ struct HistoryView: View {
     @Query(sort: \Diary.createdAt)
     private var allDiaries: [Diary]
 
-    @Query(sort: \Memo.createdAt)
-    private var allMemos: [Memo]
-
     @State private var isShowingAddView = false
     @State private var isShowingAddDiary = false
-    @State private var isShowingAddMemo = false
     @State private var isShowingAlbum = false
+    @State private var isShowingAnniversaryAlbum = false
     @State private var isShowingPeriodPicker = false
+    @State private var isShowingSettings = false
     @State private var selectedWeekDate: Date?
     @State private var selectedMonthDate: Date?
+
+    /// 세션 동안 기념일 배너를 숨겼는지 (앱 재시작 시 초기화)
+    @State private var isAnniversaryBannerDismissed = false
+
+    /// 타임라인에서 눌러 열어본 일기
+    @State private var editingTimelineDiary: Diary?
     @State private var selectedCalendarDateForNavigation: Date?
     @State private var grouping: HistoryGrouping = .day
     @State private var weekSwipeDirection = 1
@@ -259,11 +275,13 @@ struct HistoryView: View {
     }()
 
     @AppStorage("dateLogTheme")
-    private var selectedThemeRawValue = DateLogTheme.pink.rawValue
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
 
     private var selectedTheme: DateLogTheme {
-        DateLogTheme(rawValue: selectedThemeRawValue) ?? .pink
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
     }
+
+    private let anniversaryPreviewDays = 7
 
     @AppStorage("calendarWeekStartsOnMonday")
     private var calendarWeekStartsOnMonday = false
@@ -282,6 +300,9 @@ struct HistoryView: View {
     @AppStorage("showRelationshipDay")
     private var showRelationshipDay = false
 
+    @AppStorage("showRelationshipDayInHistory")
+    private var showRelationshipDayInHistory = true
+
     @AppStorage("myBirthday")
     private var myBirthdayInterval = Date().timeIntervalSince1970
 
@@ -294,6 +315,9 @@ struct HistoryView: View {
     @AppStorage("showPartnerBirthday")
     private var showPartnerBirthday = false
 
+    @AppStorage("showPlansInHistory")
+    private var showPlansInHistory = true
+
     private var welcomeMessage: String {
         let messages = [
             "우리 둘만의 DateLog.",
@@ -305,6 +329,12 @@ struct HistoryView: View {
         let twentyMinuteSlot = Int(Date().timeIntervalSince1970 / (20 * 60))
 
         return messages[twentyMinuteSlot % messages.count]
+    }
+
+    private var displayHistories: [DateHistory] {
+        histories.filter {
+            $0.type == .record || (showPlansInHistory && $0.type == .plan)
+        }
     }
 
     private var relationshipDayCount: Int {
@@ -328,7 +358,7 @@ struct HistoryView: View {
         let filteredHistories: [DateHistory]
 
         if grouping == .week {
-            filteredHistories = histories.filter { history in
+            filteredHistories = displayHistories.filter { history in
                 groupingDate(
                     for: history.date,
                     grouping: .week,
@@ -336,7 +366,7 @@ struct HistoryView: View {
                 ) == selectedWeekStart
             }
         } else if grouping == .month {
-            filteredHistories = histories.filter { history in
+            filteredHistories = displayHistories.filter { history in
                 groupingDate(
                     for: history.date,
                     grouping: .month,
@@ -344,7 +374,7 @@ struct HistoryView: View {
                 ) == selectedMonth
             }
         } else if grouping == .year {
-            filteredHistories = histories.filter { history in
+            filteredHistories = displayHistories.filter { history in
                 groupingDate(
                     for: history.date,
                     grouping: .year,
@@ -352,7 +382,7 @@ struct HistoryView: View {
                 ) == selectedYear
             }
         } else {
-            filteredHistories = histories
+            filteredHistories = displayHistories
         }
 
         let effectiveGrouping: HistoryGrouping
@@ -392,22 +422,18 @@ struct HistoryView: View {
     private var timelineDayGroups: [TimelineDayGroup] {
         let calendar = historyCalendar
         let dates = Set(
-            histories.map { calendar.startOfDay(for: $0.date) } +
-            allDiaries.map { calendar.startOfDay(for: $0.date) } +
-            allMemos.map { calendar.startOfDay(for: $0.date) }
+            displayHistories.map { calendar.startOfDay(for: $0.date) } +
+            allDiaries.map { calendar.startOfDay(for: $0.date) }
         )
 
         return dates
             .map { date in
                 TimelineDayGroup(
                     id: date,
-                    histories: histories
+                    histories: displayHistories
                         .filter { calendar.isDate($0.date, inSameDayAs: date) }
                         .sorted { $0.date > $1.date },
                     diaries: allDiaries
-                        .filter { calendar.isDate($0.date, inSameDayAs: date) }
-                        .sorted { $0.createdAt > $1.createdAt },
-                    memos: allMemos
                         .filter { calendar.isDate($0.date, inSameDayAs: date) }
                         .sorted { $0.createdAt > $1.createdAt }
                 )
@@ -431,10 +457,39 @@ struct HistoryView: View {
             .max()
     }
 
+    private var periodTimelineDayGroups: [TimelineDayGroup] {
+        switch grouping {
+        case .day:
+            return timelineDayGroups
+        case .week:
+            return timelineDayGroups.filter {
+                groupingDate(
+                    for: $0.id,
+                    grouping: .week,
+                    calendar: historyCalendar
+                ) == selectedWeekStart
+            }
+        case .month:
+            return timelineDayGroups.filter {
+                groupingDate(
+                    for: $0.id,
+                    grouping: .month,
+                    calendar: historyCalendar
+                ) == selectedMonth
+            }
+        case .year:
+            return []
+        }
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 relationshipHeader
+
+                if let upcomingAnniversary, !isAnniversaryBannerDismissed {
+                    anniversaryBanner(upcomingAnniversary)
+                }
 
                 switch grouping {
                 case .week:
@@ -463,7 +518,7 @@ struct HistoryView: View {
                 }
 
                 Group {
-                    if histories.isEmpty && allDiaries.isEmpty && allMemos.isEmpty {
+                    if displayHistories.isEmpty && allDiaries.isEmpty {
                         ContentUnavailableView(
                             "아직 기록이 없습니다",
                             systemImage: "heart.text.clipboard",
@@ -472,7 +527,7 @@ struct HistoryView: View {
                             )
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if groupedHistories.isEmpty {
+                    } else if groupedHistories.isEmpty && !(grouping == .week && !periodTimelineDayGroups.isEmpty) {
                         if grouping == .month {
                             Color.clear
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -494,35 +549,15 @@ struct HistoryView: View {
                     } else if grouping == .year {
                         EmptyView()
                     } else if grouping == .day {
-                        ScrollViewReader { proxy in
-                            ScrollView {
-                                LazyVStack(alignment: .leading, spacing: 0) {
-                                    ForEach(Array(timelineDayGroups.enumerated()), id: \.element.id) { index, group in
-                                        timelineDayGroupView(
-                                            group,
-                                            showsMonth: shouldShowTimelineMonth(
-                                                at: index
-                                            ),
-                                            showsSeparator: index > 0
-                                        )
-                                            .id(group.id)
-                                    }
-                                }
-                                .padding(.horizontal, 16)
-                                .padding(.top, 18)
-                                .padding(.bottom, 28)
-                            }
-                            .background(selectedTheme.backgroundColor)
-                            .onAppear {
-                                guard let defaultTimelineDate else {
-                                    return
-                                }
-
-                                DispatchQueue.main.async {
-                                    proxy.scrollTo(defaultTimelineDate, anchor: .top)
-                                }
-                            }
-                        }
+                        timelineListView(
+                            groups: timelineDayGroups,
+                            scrollsToDefaultDate: true
+                        )
+                    } else if grouping == .week {
+                        timelineListView(
+                            groups: periodTimelineDayGroups,
+                            scrollsToDefaultDate: false
+                        )
                     } else {
                         ScrollViewReader { proxy in
                             ScrollView {
@@ -577,7 +612,7 @@ struct HistoryView: View {
                                                     .buttonStyle(.plain)
                                                     .contextMenu {
                                                         Button(
-                                                            "\(history.type.displayName) 삭제",
+                                                            "데이트 삭제",
                                                             systemImage: "trash",
                                                             role: .destructive
                                                         ) {
@@ -636,6 +671,8 @@ struct HistoryView: View {
             .contentShape(Rectangle())
             .simultaneousGesture(periodSwipeGesture)
             .onAppear {
+                updateQuickAddTargetDate()
+
                 selectedWeekStart = groupingDate(
                     for: selectedWeekDate ?? Date(),
                     grouping: .week,
@@ -655,33 +692,77 @@ struct HistoryView: View {
                     grouping: .week,
                     calendar: historyCalendar
                 )
+                updateQuickAddTargetDate()
             }
-            .toolbarBackground(selectedTheme.color, for: .navigationBar)
+            .onChange(of: grouping) {
+                updateQuickAddTargetDate()
+            }
+            .onChange(of: selectedWeekDate) {
+                updateQuickAddTargetDate()
+            }
+            .onChange(of: selectedMonthDate) {
+                updateQuickAddTargetDate()
+            }
+            .onChange(of: selectedMonth) {
+                updateQuickAddTargetDate()
+            }
+            .onChange(of: selectedYear) {
+                updateQuickAddTargetDate()
+            }
+            .toolbarBackground(selectedTheme.primaryColor, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbarColorScheme(
-                selectedTheme.navigationColorScheme,
+                selectedTheme.onPrimaryColorScheme,
                 for: .navigationBar
             )
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    Text("DateLog")
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(selectedTheme.navigationTextColor)
+                    // 헤더가 히어로와 같은 테마 색이므로 텍스트 획은 onPrimary 색으로,
+                    // 하트는 원본 핑크를 유지한다
+                    ZStack {
+                        Image("DateLogLogoText")
+                            .resizable()
+                            .scaledToFit()
+                            .foregroundStyle(selectedTheme.onPrimaryTextColor)
+                        Image("DateLogLogoHeart")
+                            .resizable()
+                            .scaledToFit()
+                    }
+                    .frame(width: 94, height: 32)
+                    .accessibilityLabel("DateLog")
                 }
 
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
                         isShowingAlbum = true
                     } label: {
                         Image(systemName: "photo.on.rectangle")
-                            .foregroundStyle(selectedTheme.navigationTextColor)
+                            .foregroundStyle(selectedTheme.onPrimaryTextColor)
                     }
                     .accessibilityLabel("앨범")
+
+                    Button {
+                        isShowingSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                            .foregroundStyle(selectedTheme.onPrimaryTextColor)
+                    }
+                    .accessibilityLabel("설정")
                 }
             }
             .sheet(isPresented: $isShowingAlbum) {
                 AlbumView()
+            }
+            .sheet(isPresented: $isShowingSettings) {
+                SettingsView()
+            }
+            .sheet(isPresented: $isShowingAnniversaryAlbum) {
+                if let upcomingAnniversary {
+                    anniversaryHistorySheet(upcomingAnniversary)
+                        .presentationDetents([.medium, .large])
+                        .presentationDragIndicator(.visible)
+                }
             }
             .sheet(isPresented: $isShowingAddView) {
                 AddDateHistoryView(initialDate: addTargetDate)
@@ -689,8 +770,8 @@ struct HistoryView: View {
             .sheet(isPresented: $isShowingAddDiary) {
                 AddDiaryView(date: addTargetDate)
             }
-            .sheet(isPresented: $isShowingAddMemo) {
-                AddMemoView(date: addTargetDate)
+            .sheet(item: $editingTimelineDiary) { diary in
+                AddDiaryView(date: diary.date, diary: diary)
             }
             .sheet(isPresented: $isShowingPeriodPicker) {
                 periodPickerSheet
@@ -700,7 +781,7 @@ struct HistoryView: View {
             .navigationDestination(item: $selectedCalendarDateForNavigation) { date in
                 DayView(
                     date: date,
-                    histories: histories.filter {
+                    histories: displayHistories.filter {
                         historyCalendar.isDate($0.date, inSameDayAs: date)
                     }
                 )
@@ -729,15 +810,25 @@ struct HistoryView: View {
             return selectedWeekDate ?? selectedWeekStart
         case .month:
             return selectedMonthDate ?? selectedMonth
-        case .day, .year:
+        case .year:
+            return selectedMonthDate ?? selectedYear
+        case .day:
             return Date()
         }
     }
 
     private func prepareDateHistoryAddDate() {
-        if grouping == .month, selectedMonthDate == nil {
+        if grouping == .week, selectedWeekDate == nil {
+            selectedWeekDate = selectedWeekStart
+        } else if (grouping == .month || grouping == .year), selectedMonthDate == nil {
             selectedMonthDate = selectedMonth
         }
+
+        updateQuickAddTargetDate()
+    }
+
+    private func updateQuickAddTargetDate() {
+        quickAddTargetDate = addTargetDate
     }
 
     private var weekSelectorBar: some View {
@@ -779,20 +870,26 @@ struct HistoryView: View {
                 let birthdayLabel = birthdayLabel(for: date)
                 let eventLabel = anniversaryLabel ?? birthdayLabel
 
-                let dateCount = histories.filter {
+                let dateCount = displayHistories.filter {
+                    $0.type == .record &&
+                    historyCalendar.isDate($0.date, inSameDayAs: date)
+                }.count
+                let planCount = displayHistories.filter {
+                    $0.type == .plan &&
                     historyCalendar.isDate($0.date, inSameDayAs: date)
                 }.count
                 let diaryCount = allDiaries.filter {
                     Calendar.current.isDate($0.date, inSameDayAs: date)
                 }.count
-                let memoCount = allMemos.filter {
-                    Calendar.current.isDate($0.date, inSameDayAs: date)
-                }.count
 
                 Button {
                     let selectedDate = historyCalendar.startOfDay(for: date)
-                    selectedWeekDate = selectedDate
-                    selectedCalendarDateForNavigation = selectedDate
+
+                    if isSelected {
+                        selectedCalendarDateForNavigation = selectedDate
+                    } else {
+                        selectedWeekDate = selectedDate
+                    }
                 } label: {
                     VStack(spacing: 4) {
                         Text(shortWeekdayText(for: date))
@@ -817,23 +914,11 @@ struct HistoryView: View {
                                 }
                             }
 
-                        HStack(spacing: 3) {
-                            ForEach(0..<min(dateCount, 5), id: \.self) { _ in
-                                Circle()
-                                    .fill(selectedTheme.primaryColor)
-                                    .frame(width: 4, height: 4)
-                            }
-                            ForEach(0..<min(diaryCount, 5), id: \.self) { _ in
-                                Circle()
-                                    .fill(Color.yellow)
-                                    .frame(width: 4, height: 4)
-                            }
-                            ForEach(0..<min(memoCount, 5), id: \.self) { _ in
-                                Circle()
-                                    .fill(Color.green)
-                                    .frame(width: 4, height: 4)
-                            }
-                        }
+                        calendarEventDots(
+                            dateCount: dateCount,
+                            planCount: planCount,
+                            diaryCount: diaryCount
+                        )
                         .frame(height: 6)
 
                         if let eventLabel {
@@ -889,6 +974,282 @@ struct HistoryView: View {
         }
     }
 
+    private var upcomingAnniversary: UpcomingAnniversary? {
+        guard showRelationshipDay else {
+            return nil
+        }
+
+        let calendar = historyCalendar
+        let startDate = calendar.startOfDay(
+            for: Date(timeIntervalSince1970: relationshipStartDateInterval)
+        )
+        let today = calendar.startOfDay(for: Date())
+
+        for offset in 0...anniversaryPreviewDays {
+            guard let targetDate = calendar.date(
+                byAdding: .day,
+                value: offset,
+                to: today
+            ) else {
+                continue
+            }
+
+            guard let periodEnd = calendar.date(
+                byAdding: .day,
+                value: 1,
+                to: targetDate
+            )?.addingTimeInterval(-1) else {
+                continue
+            }
+
+            let years = calendar.dateComponents(
+                [.year],
+                from: startDate,
+                to: targetDate
+            ).year ?? 0
+
+            if years >= 1, isSameMonthAndDay(targetDate, startDate) {
+                let periodStart = calendar.date(
+                    byAdding: .year,
+                    value: years - 1,
+                    to: startDate
+                ) ?? startDate
+
+                return UpcomingAnniversary(
+                    label: "\(years)주년",
+                    remainingDays: offset,
+                    periodStart: periodStart,
+                    periodEnd: periodEnd
+                )
+            }
+
+            guard let days = calendar.dateComponents(
+                [.day],
+                from: startDate,
+                to: targetDate
+            ).day else {
+                continue
+            }
+
+            let relationshipDay = days + 1
+
+            if relationshipDay >= 100, relationshipDay % 100 == 0 {
+                let periodStart = calendar.date(
+                    byAdding: .day,
+                    value: -100,
+                    to: targetDate
+                ) ?? startDate
+
+                return UpcomingAnniversary(
+                    label: "\(relationshipDay)일",
+                    remainingDays: offset,
+                    periodStart: max(periodStart, startDate),
+                    periodEnd: periodEnd
+                )
+            }
+        }
+
+        return nil
+    }
+
+    private func anniversaryBanner(
+        _ anniversary: UpcomingAnniversary
+    ) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(
+                    anniversary.remainingDays == 0
+                        ? "오늘은 \(anniversary.label)이에요."
+                        : "\(anniversary.label)이 \(anniversary.remainingDays)일 남았어요."
+                )
+                .font(.pretendard(size: 15, weight: .bold))
+                .foregroundStyle(.primary)
+
+                Text("소중한 순간들을 되돌아보세요.")
+                    .font(.pretendard(size: 13, weight: .regular))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                isShowingAnniversaryAlbum = true
+            } label: {
+                Text("추억 돌아보기")
+                    .font(.pretendard(size: 13, weight: .semiBold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 9)
+                    .background(selectedTheme.primaryColor)
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+        .background(selectedTheme.primaryColor.opacity(0.10))
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 16,
+                style: .continuous
+            )
+        )
+        .overlay(alignment: .topTrailing) {
+            // 세션 동안만 배너를 숨긴다. 앱을 다시 켜면 다시 보인다.
+            Button {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    isAnniversaryBannerDismissed = true
+                }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(8)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("기념일 배너 닫기")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+    }
+
+    private func anniversaryHistorySheet(
+        _ anniversary: UpcomingAnniversary
+    ) -> some View {
+        let groups = anniversaryTimelineDayGroups(for: anniversary)
+
+        return NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    anniversaryAlbumHeader(anniversary)
+
+                    if groups.isEmpty {
+                        ContentUnavailableView(
+                            "돌아볼 기록이 없습니다",
+                            systemImage: "heart.text.clipboard",
+                            description: Text("이 기간에 남긴 데이트나 일기가 없습니다.")
+                        )
+                        .padding(.top, 46)
+                    } else {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+                                timelineDayGroupView(
+                                    group,
+                                    showsMonth: shouldShowAnniversaryTimelineMonth(
+                                        in: groups,
+                                        at: index
+                                    ),
+                                    showsSeparator: index > 0
+                                )
+                            }
+                        }
+                        .padding(.top, 22)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 28)
+            }
+            .background(selectedTheme.backgroundColor)
+            .navigationTitle("\(anniversary.label) 추억")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("닫기") {
+                        isShowingAnniversaryAlbum = false
+                    }
+                }
+            }
+        }
+    }
+
+    private func anniversaryAlbumHeader(
+        _ anniversary: UpcomingAnniversary
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "heart.fill")
+                    .font(.system(size: 11))
+
+                Text(
+                    anniversary.remainingDays == 0
+                        ? "오늘은 우리의 \(anniversary.label)"
+                        : "\(anniversary.label)까지 \(anniversary.remainingDays)일"
+                )
+                .font(.pretendard(size: 12, weight: .semiBold))
+            }
+            .foregroundStyle(selectedTheme.primaryColor.opacity(0.85))
+
+            Text("지난 \(anniversary.label)의 추억을\n함께 돌아보아요")
+                .font(.pretendard(size: 23, weight: .extraBold))
+                .foregroundStyle(.primary)
+                .lineSpacing(4)
+
+            Text(
+                "\(DateDisplayFormatter.string(from: anniversary.periodStart)) - \(DateDisplayFormatter.string(from: anniversary.periodEnd))의 기록이 담겨 있어요."
+            )
+            .font(.pretendard(size: 13, weight: .regular))
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
+        .background(selectedTheme.primaryColor.opacity(0.07))
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 20,
+                style: .continuous
+            )
+        )
+        .padding(.top, 14)
+    }
+
+    private func anniversaryTimelineDayGroups(
+        for anniversary: UpcomingAnniversary
+    ) -> [TimelineDayGroup] {
+        let calendar = historyCalendar
+        let dateRange = anniversary.periodStart...anniversary.periodEnd
+        let periodHistories = displayHistories.filter { dateRange.contains($0.date) }
+        let periodDiaries = allDiaries.filter { dateRange.contains($0.date) }
+        let dates = Set(
+            periodHistories.map { calendar.startOfDay(for: $0.date) } +
+            periodDiaries.map { calendar.startOfDay(for: $0.date) }
+        )
+
+        return dates
+            .map { date in
+                TimelineDayGroup(
+                    id: date,
+                    histories: periodHistories
+                        .filter { calendar.isDate($0.date, inSameDayAs: date) }
+                        .sorted { $0.date > $1.date },
+                    diaries: periodDiaries
+                        .filter { calendar.isDate($0.date, inSameDayAs: date) }
+                        .sorted { $0.createdAt > $1.createdAt }
+                )
+            }
+            .filter { !$0.isEmpty }
+            .sorted { $0.id > $1.id }
+    }
+
+    private func shouldShowAnniversaryTimelineMonth(
+        in groups: [TimelineDayGroup],
+        at index: Int
+    ) -> Bool {
+        guard groups.indices.contains(index) else {
+            return false
+        }
+
+        if index == 0 {
+            return true
+        }
+
+        return !historyCalendar.isDate(
+            groups[index].id,
+            equalTo: groups[index - 1].id,
+            toGranularity: .month
+        )
+    }
+
     private func relationshipAnniversaryLabel(for date: Date) -> String? {
         guard showRelationshipDay else {
             return nil
@@ -916,6 +1277,16 @@ struct HistoryView: View {
 
         if relationshipDay == 1 {
             return "1일"
+        }
+
+        let years = calendar.dateComponents(
+            [.year],
+            from: startDate,
+            to: targetDate
+        ).year ?? 0
+
+        if years >= 1, isSameMonthAndDay(targetDate, startDate) {
+            return "\(years)주년"
         }
 
         if relationshipDay % 100 == 0 {
@@ -971,6 +1342,48 @@ struct HistoryView: View {
         formatter.locale = Locale(identifier: "ko_KR")
         formatter.dateFormat = "E"
         return formatter.string(from: date)
+    }
+
+    /// 캘린더 이벤트 점 고정 색 — 테마와 무관하게 데이트는 분홍, 일기는 머스터드
+    private static let dateDotColor = Color(
+        red: 0.93,
+        green: 0.32,
+        blue: 0.58
+    )
+    private static let diaryDotColor = Color(
+        red: 0.85,
+        green: 0.63,
+        blue: 0.15
+    )
+
+    /// 날짜 아래 이벤트 점. 최대 4개까지만 보여주고 넘치면 점 크기의 +를 덧붙인다.
+    private func calendarEventDots(
+        dateCount: Int,
+        planCount: Int,
+        diaryCount: Int
+    ) -> some View {
+        let dotColors =
+            Array(repeating: Self.dateDotColor, count: dateCount)
+            + Array(repeating: Color.gray.opacity(0.55), count: planCount)
+            + Array(repeating: Self.diaryDotColor, count: diaryCount)
+
+        return HStack(spacing: 3) {
+            ForEach(
+                Array(dotColors.prefix(4).enumerated()),
+                id: \.offset
+            ) { _, color in
+                Circle()
+                    .fill(color)
+                    .frame(width: 4, height: 4)
+            }
+
+            if dotColors.count > 4 {
+                Image(systemName: "plus")
+                    .font(.system(size: 5, weight: .black))
+                    .foregroundStyle(Color.secondary)
+                    .frame(width: 4, height: 4)
+            }
+        }
     }
 
     private func calendarDayColor(for date: Date) -> Color {
@@ -1044,6 +1457,28 @@ struct HistoryView: View {
             .padding(.bottom, 12)
         }
         .buttonStyle(.plain)
+        .overlay(alignment: .trailing) {
+            Button {
+                let today = Date()
+                selectedMonth = groupingDate(
+                    for: today,
+                    grouping: .month,
+                    calendar: historyCalendar
+                )
+                selectedMonthDate = historyCalendar.startOfDay(for: today)
+            } label: {
+                Text("오늘")
+                    .font(.pretendard(size: 13, weight: .semiBold))
+                    .foregroundStyle(selectedTheme.primaryColor)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .background(selectedTheme.primaryColor.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 20)
+            .padding(.top, 6)
+        }
     }
 
     private var monthCalendarGrid: some View {
@@ -1093,10 +1528,10 @@ struct HistoryView: View {
                 grouping: .month,
                 calendar: historyCalendar
             )
-            selectedMonthDate = selectedMonth
+            selectedMonthDate = defaultMonthSelectedDate(for: selectedMonth)
         }
         .onChange(of: selectedMonth) { oldMonth, newMonth in
-            selectedMonthDate = newMonth
+            selectedMonthDate = defaultMonthSelectedDate(for: newMonth)
 
             guard !historyCalendar.isDate(
                 oldMonth,
@@ -1116,6 +1551,16 @@ struct HistoryView: View {
                 monthPageSelection = offset
             }
         }
+    }
+
+    private func defaultMonthSelectedDate(for month: Date) -> Date {
+        historyCalendar.isDate(
+            Date(),
+            equalTo: month,
+            toGranularity: .month
+        )
+            ? historyCalendar.startOfDay(for: Date())
+            : month
     }
 
     private func monthCalendarHeight(for month: Date) -> CGFloat {
@@ -1155,13 +1600,15 @@ struct HistoryView: View {
                     let isSelected = selectedMonthDate.map {
                         historyCalendar.isDate($0, inSameDayAs: date)
                     } ?? false
-                    let dateCount = histories.filter {
+                    let dateCount = displayHistories.filter {
+                        $0.type == .record &&
+                        historyCalendar.isDate($0.date, inSameDayAs: date)
+                    }.count
+                    let planCount = displayHistories.filter {
+                        $0.type == .plan &&
                         historyCalendar.isDate($0.date, inSameDayAs: date)
                     }.count
                     let diaryCount = allDiaries.filter {
-                        Calendar.current.isDate($0.date, inSameDayAs: date)
-                    }.count
-                    let memoCount = allMemos.filter {
                         Calendar.current.isDate($0.date, inSameDayAs: date)
                     }.count
                     let weekday = historyCalendar.component(.weekday, from: date)
@@ -1175,6 +1622,7 @@ struct HistoryView: View {
                             return
                         }
 
+                        // 선택 단계 없이 바로 해당 날짜 페이지로 이동한다
                         let selectedDate = historyCalendar.startOfDay(for: date)
                         selectedMonthDate = selectedDate
                         selectedCalendarDateForNavigation = selectedDate
@@ -1183,65 +1631,42 @@ struct HistoryView: View {
                             Text("\(historyCalendar.component(.day, from: date))")
                                 .font(
                                     .subheadline.weight(
-                                        isSelected || isAnniversary || isBirthday ? .bold : .medium
+                                        isAnniversary || isBirthday ? .bold : .medium
                                     )
                                 )
                                 .foregroundStyle(
-                                    isSelected || isAnniversary || isBirthday
-                                        ? Color.white
-                                        : monthDayColor(
-                                            date: date,
-                                            weekday: weekday,
-                                            isCurrentMonth: isCurrentMonth,
-                                            isSelected: false
-                                        )
+                                    isAnniversary
+                                        ? selectedTheme.primaryColor
+                                        : isBirthday
+                                            ? selectedTheme.secondaryColor
+                                            : monthDayColor(
+                                                date: date,
+                                                weekday: weekday,
+                                                isCurrentMonth: isCurrentMonth,
+                                                isSelected: false
+                                            )
                                 )
                                 .frame(width: 34, height: 30)
-                                .background {
+                                .overlay(alignment: .top) {
                                     if isAnniversary {
-                                        RoundedRectangle(
-                                            cornerRadius: 7,
-                                            style: .continuous
-                                        )
-                                        .fill(selectedTheme.primaryColor)
+                                        Text("❤️")
+                                            .font(.system(size: 7))
+                                            .offset(y: -4)
                                     } else if isBirthday {
-                                        RoundedRectangle(
-                                            cornerRadius: 7,
-                                            style: .continuous
-                                        )
-                                        .fill(selectedTheme.secondaryColor)
-                                    } else if isSelected {
-                                        Circle()
-                                            .fill(selectedTheme.primaryColor)
+                                        Text("🎂")
+                                            .font(.system(size: 7))
+                                            .offset(y: -4)
                                     }
                                 }
 
-                            HStack(spacing: 3) {
-                                ForEach(0..<min(dateCount, 5), id: \.self) { _ in
-                                    Circle()
-                                        .fill(selectedTheme.primaryColor)
-                                        .frame(width: 4, height: 4)
-                                }
-                                ForEach(0..<min(diaryCount, 5), id: \.self) { _ in
-                                    Circle()
-                                        .fill(Color.yellow)
-                                        .frame(width: 4, height: 4)
-                                }
-                                ForEach(0..<min(memoCount, 5), id: \.self) { _ in
-                                    Circle()
-                                        .fill(Color.green)
-                                        .frame(width: 4, height: 4)
-                                }
-                            }
+                            calendarEventDots(
+                                dateCount: dateCount,
+                                planCount: planCount,
+                                diaryCount: diaryCount
+                            )
                             .frame(height: 6, alignment: .top)
+                            .offset(y: -3)
 
-                            if isBirthday {
-                                Text("생일")
-                                    .font(.pretendard(size: 8, weight: .bold))
-                                    .foregroundStyle(selectedTheme.secondaryColor)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.75)
-                            }
                         }
                         .frame(maxWidth: .infinity)
                     }
@@ -1467,7 +1892,8 @@ struct HistoryView: View {
             return formatter
         }()
         let monthlyHistoryCounts = months.map { monthDate in
-            histories.filter {
+            displayHistories.filter {
+                $0.type == .record &&
                 calendar.isDate(
                     $0.date,
                     equalTo: monthDate,
@@ -1487,7 +1913,8 @@ struct HistoryView: View {
                 HStack(spacing: 12) {
                     ForEach(pair, id: \.self) { monthDate in
                         let index = months.firstIndex(of: monthDate) ?? 0
-                        let monthHistories = histories.filter {
+                        let monthHistories = displayHistories.filter {
+                            $0.type == .record &&
                             calendar.isDate(
                                 $0.date,
                                 equalTo: monthDate,
@@ -1790,6 +2217,41 @@ struct HistoryView: View {
         }
     }
 
+    private func scrollToTimelineDate(
+        _ date: Date,
+        in groups: [TimelineDayGroup],
+        using proxy: ScrollViewProxy
+    ) {
+        let targetDate = historyCalendar.startOfDay(for: date)
+
+        guard let resolvedDate = timelineScrollTarget(for: targetDate, in: groups) else {
+            return
+        }
+
+        withAnimation(.easeInOut(duration: 0.28)) {
+            proxy.scrollTo(resolvedDate, anchor: .top)
+        }
+    }
+
+    private func timelineScrollTarget(
+        for targetDate: Date,
+        in groups: [TimelineDayGroup]
+    ) -> Date? {
+        let groupDates = groups.map { historyCalendar.startOfDay(for: $0.id) }
+
+        if groupDates.contains(where: {
+            historyCalendar.isDate($0, inSameDayAs: targetDate)
+        }) {
+            return targetDate
+        }
+
+        if let previousDate = groupDates.filter({ $0 < targetDate }).max() {
+            return previousDate
+        }
+
+        return groupDates.min()
+    }
+
     private func moveSelectedPeriod(by value: Int) {
         switch grouping {
         case .week:
@@ -1822,55 +2284,89 @@ struct HistoryView: View {
         }
     }
 
+    private func timelineListView(
+        groups: [TimelineDayGroup],
+        scrollsToDefaultDate: Bool
+    ) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+                        timelineDayGroupView(
+                            group,
+                            showsMonth: shouldShowTimelineMonth(in: groups, at: index),
+                            showsSeparator: index > 0
+                        )
+                        .id(group.id)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 18)
+                .padding(.bottom, 28)
+            }
+            .background(selectedTheme.backgroundColor)
+            .id(grouping == .week ? selectedWeekStart : Date.distantPast)
+            .transition(
+                grouping == .week
+                    ? .asymmetric(
+                        insertion: .move(
+                            edge: weekSwipeDirection > 0
+                                ? .trailing
+                                : .leading
+                        ).combined(with: .opacity),
+                        removal: .move(
+                            edge: weekSwipeDirection > 0
+                                ? .leading
+                                : .trailing
+                        ).combined(with: .opacity)
+                    )
+                    : .identity
+            )
+            .onAppear {
+                guard scrollsToDefaultDate, let defaultTimelineDate else {
+                    return
+                }
+
+                DispatchQueue.main.async {
+                    proxy.scrollTo(defaultTimelineDate, anchor: .top)
+                }
+            }
+            .onChange(of: selectedWeekDate) { _, newDate in
+                guard grouping == .week, let newDate else {
+                    return
+                }
+
+                scrollToTimelineDate(newDate, in: groups, using: proxy)
+            }
+        }
+    }
+
     private func timelineDayGroupView(
         _ group: TimelineDayGroup,
         showsMonth: Bool,
         showsSeparator: Bool
     ) -> some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 16) {
             if showsSeparator {
                 Rectangle()
-                    .fill(Color.primary.opacity(0.06))
+                    .fill(Color.primary.opacity(0.045))
                     .frame(height: 1)
-                    .padding(.leading, 66)
+                    .padding(.leading, 82)
+                    .padding(.vertical, 4)
             }
 
             HStack(alignment: .top, spacing: 14) {
-                VStack(spacing: 6) {
-                    Text(showsMonth ? timelineMonthText(for: group.id) : "")
-                        .font(.pretendard(size: 12, weight: .semiBold))
-                        .foregroundStyle(selectedTheme.primaryColor)
-                        .frame(height: 16)
-
-                    HStack(alignment: .center, spacing: 6) {
-                        Text(timelineDayText(for: group.id))
-                            .font(
-                                .system(
-                                    size: 23,
-                                    weight: .semibold,
-                                    design: .serif
-                                )
-                            )
-                            .monospacedDigit()
-                            .foregroundStyle(.white)
-                            .frame(width: 46, height: 46)
-                            .background(selectedTheme.primaryColor)
-                            .clipShape(Circle())
-
-                        if let label = relationshipTimelineLabel(for: group.id) {
-                            Text(label)
-                                .font(.pretendard(size: 10, weight: .semiBold))
-                                .foregroundStyle(selectedTheme.primaryColor.opacity(0.72))
-                                .fixedSize()
-                        }
-                    }
+                VStack(spacing: 4) {
+                    // 월 칩이 박스 위에 얹히므로 모든 행에 같은 여백을 준다
+                    timelineDateBox(for: group.id, showsMonth: showsMonth)
+                        .padding(.top, 9)
 
                     Rectangle()
-                        .fill(selectedTheme.primaryColor.opacity(0.16))
+                        .fill(selectedTheme.primaryColor.opacity(0.11))
                         .frame(width: 2)
                         .frame(maxHeight: .infinity)
                 }
-                .frame(width: 70, alignment: .leading)
+                .frame(width: timelineDateColumnWidth, alignment: .center)
 
                 VStack(spacing: 8) {
                     ForEach(group.histories) { history in
@@ -1882,7 +2378,7 @@ struct HistoryView: View {
                         .buttonStyle(.plain)
                         .contextMenu {
                             Button(
-                                "\(history.type.displayName) 삭제",
+                                "데이트 삭제",
                                 systemImage: "trash",
                                 role: .destructive
                             ) {
@@ -1894,18 +2390,17 @@ struct HistoryView: View {
                     ForEach(group.diaries) { diary in
                         timelineDiaryCard(diary)
                     }
-
-                    ForEach(group.memos) { memo in
-                        timelineMemoCard(memo)
-                    }
                 }
                 .padding(.bottom, 22)
             }
         }
     }
 
-    private func shouldShowTimelineMonth(at index: Int) -> Bool {
-        guard timelineDayGroups.indices.contains(index) else {
+    private func shouldShowTimelineMonth(
+        in groups: [TimelineDayGroup],
+        at index: Int
+    ) -> Bool {
+        guard groups.indices.contains(index) else {
             return false
         }
 
@@ -1914,14 +2409,69 @@ struct HistoryView: View {
         }
 
         return !historyCalendar.isDate(
-            timelineDayGroups[index].id,
-            equalTo: timelineDayGroups[index - 1].id,
+            groups[index].id,
+            equalTo: groups[index - 1].id,
             toGranularity: .month
         )
     }
 
+    private var showsRelationshipTimelineLabel: Bool {
+        showRelationshipDay && showRelationshipDayInHistory
+    }
+
+    private var timelineDateColumnWidth: CGFloat {
+        58
+    }
+
+    /// 위 칸은 배경색 바탕에 포인트색 날짜, 아래 칸은 포인트색 바탕에 만난 날 일수.
+    /// 달이 바뀌는 날에는 월 칩이 박스 위에 얹혀 위치 통일성을 지킨다.
+    private func timelineDateBox(
+        for date: Date,
+        showsMonth: Bool
+    ) -> some View {
+        VStack(spacing: 0) {
+            Text(timelineDayText(for: date))
+                .font(.system(size: 21, weight: .semibold, design: .serif))
+                .monospacedDigit()
+                .foregroundStyle(selectedTheme.primaryOnBackgroundTextColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+                .frame(width: 46)
+                .padding(.vertical, 8)
+                .background(selectedTheme.backgroundColor)
+
+            if let relationshipLabel = relationshipTimelineLabel(for: date) {
+                Text(relationshipLabel)
+                    .font(.pretendard(size: 10, weight: .bold))
+                    .monospacedDigit()
+                    .foregroundStyle(selectedTheme.backgroundOnPrimaryTextColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+                    .frame(width: 46)
+                    .padding(.vertical, 5)
+                    .background(selectedTheme.primaryColor)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(selectedTheme.primaryColor.opacity(0.55), lineWidth: 1)
+        }
+        .overlay(alignment: .top) {
+            if showsMonth {
+                Text(timelineMonthText(for: date))
+                    .font(.pretendard(size: 9, weight: .bold))
+                    .foregroundStyle(selectedTheme.backgroundOnPrimaryTextColor)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(selectedTheme.primaryColor))
+                    .offset(y: -9)
+            }
+        }
+    }
+
     private func relationshipTimelineLabel(for date: Date) -> String? {
-        guard showRelationshipDay else {
+        guard showsRelationshipTimelineLabel else {
             return nil
         }
 
@@ -1947,7 +2497,9 @@ struct HistoryView: View {
     private func timelineHistoryCard(
         _ history: DateHistory
     ) -> some View {
-        if
+        let isPlan = history.type == .plan
+
+        if !isPlan,
             let imageData = history.coverImageData,
             let uiImage = UIImage(data: imageData)
         {
@@ -1962,6 +2514,7 @@ struct HistoryView: View {
                         .frame(height: 148)
                         .frame(maxWidth: .infinity)
                         .clipped()
+                        .saturation(isPlan ? 0.35 : 1)
 
                     LinearGradient(
                         colors: [
@@ -1989,6 +2542,11 @@ struct HistoryView: View {
                         style: .continuous
                     )
                 )
+                .overlay(alignment: .topTrailing) {
+                    if isPlan {
+                        planBadge
+                    }
+                }
                 .shadow(color: .black.opacity(0.08), radius: 12, x: 0, y: 5)
             )
         }
@@ -1996,17 +2554,21 @@ struct HistoryView: View {
         return AnyView(
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 10) {
-                    Image(systemName: history.type.systemImage)
-                        .foregroundStyle(selectedTheme.primaryColor)
+                    Image(systemName: isPlan ? "calendar.badge.clock" : "heart.fill")
+                        .foregroundStyle(
+                            isPlan ? Color.gray : selectedTheme.primaryColor
+                        )
 
                     Text(history.title)
                         .font(.pretendard(size: 17, weight: .bold))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(isPlan ? Color.secondary : Color.primary)
                         .lineLimit(1)
                 }
 
-                if !history.memo.isEmpty {
-                    Text(history.memo)
+                if let latestComment = history.comments.max(
+                    by: { $0.createdAt < $1.createdAt }
+                ) {
+                    Text(latestComment.content)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -2017,7 +2579,11 @@ struct HistoryView: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selectedTheme.cardBackgroundColor)
+            .background(
+                isPlan
+                    ? Color(uiColor: .systemGray6)
+                    : selectedTheme.cardBackgroundColor
+            )
             .clipShape(
                 RoundedRectangle(
                     cornerRadius: 20,
@@ -2029,20 +2595,36 @@ struct HistoryView: View {
                     cornerRadius: 20,
                     style: .continuous
                 )
-                .stroke(selectedTheme.primaryColor.opacity(0.10), lineWidth: 1)
+                .stroke(
+                    isPlan
+                        ? Color.gray.opacity(0.28)
+                        : selectedTheme.primaryColor.opacity(0.10),
+                    lineWidth: 1
+                )
+            }
+            .overlay(alignment: .topTrailing) {
+                if isPlan {
+                    planBadge
+                }
             }
         )
+    }
+
+    private var planBadge: some View {
+        Text("계획")
+            .font(.pretendard(size: 11, weight: .bold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(Color.gray)
+            .clipShape(Capsule())
+            .padding(10)
     }
 
     private func historyMetaRow(
         _ history: DateHistory
     ) -> some View {
         HStack(spacing: 10) {
-            Label(
-                history.type.displayName,
-                systemImage: history.type.systemImage
-            )
-
             Label(
                 "장소 \(history.places.count)곳",
                 systemImage: "mappin.and.ellipse"
@@ -2054,55 +2636,42 @@ struct HistoryView: View {
     private func timelineDiaryCard(
         _ diary: Diary
     ) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Text(diary.mood)
-                Text(diary.weather)
+        Button {
+            editingTimelineDiary = diary
+        } label: {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    Text(diary.mood)
+                    Text(diary.weather)
 
-                Text(diary.title.isEmpty ? "일기" : diary.title)
-                    .font(.pretendard(size: 16, weight: .bold))
-                    .lineLimit(1)
+                    Text(diary.title.isEmpty ? "일기" : diary.title)
+                        .font(.pretendard(size: 16, weight: .bold))
+                        .lineLimit(1)
+                }
+
+                Text(diary.content)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            Text(diary.content)
-                .font(.subheadline)
-                .foregroundStyle(.primary)
-                .lineLimit(4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.yellow.opacity(0.13))
-        .clipShape(
-            RoundedRectangle(
-                cornerRadius: 18,
-                style: .continuous
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.yellow.opacity(0.13))
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: 18,
+                    style: .continuous
+                )
             )
-        )
-    }
-
-    private func timelineMemoCard(
-        _ memo: Memo
-    ) -> some View {
-        HStack(alignment: .top, spacing: 9) {
-            Image(systemName: "note.text")
-                .foregroundStyle(selectedTheme.secondaryColor)
-
-            Text(memo.content)
-                .font(.subheadline)
-                .foregroundStyle(.primary)
-                .lineLimit(3)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(selectedTheme.secondaryColor.opacity(0.10))
-        .clipShape(
-            RoundedRectangle(
-                cornerRadius: 14,
-                style: .continuous
+            .contentShape(
+                RoundedRectangle(
+                    cornerRadius: 18,
+                    style: .continuous
+                )
             )
-        )
+        }
+        .buttonStyle(.plain)
     }
 
     private func usesLightText(on image: UIImage) -> Bool {
@@ -2156,7 +2725,7 @@ struct HistoryView: View {
                 Text("오늘, 우리가 함께한")
                     .font(.subheadline)
                     .foregroundStyle(
-                        selectedTheme.navigationTextColor.opacity(0.78)
+                        selectedTheme.onPrimaryTextColor.opacity(0.78)
                     )
 
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
@@ -2169,23 +2738,23 @@ struct HistoryView: View {
                             )
                         )
                         .monospacedDigit()
-                        .foregroundStyle(selectedTheme.navigationTextColor)
+                        .foregroundStyle(selectedTheme.onPrimaryTextColor)
 
                     Text("일째")
                         .font(.headline)
                         .foregroundStyle(
-                            selectedTheme.navigationTextColor.opacity(0.82)
+                            selectedTheme.onPrimaryTextColor.opacity(0.82)
                         )
                 }
             } else {
                 Text(welcomeMessage)
                     .font(.title3.weight(.semibold))
-                    .foregroundStyle(selectedTheme.navigationTextColor)
+                    .foregroundStyle(selectedTheme.onPrimaryTextColor)
 
                 Text("데이트 계획과 추억을 하나씩 남겨보세요.")
                     .font(.subheadline)
                     .foregroundStyle(
-                        selectedTheme.navigationTextColor.opacity(0.76)
+                        selectedTheme.onPrimaryTextColor.opacity(0.76)
                     )
             }
         }
@@ -2194,7 +2763,7 @@ struct HistoryView: View {
         .padding(.top, 18)
         .padding(.trailing, 158)
         .padding(.bottom, 20)
-        .background(selectedTheme.color)
+        .background(selectedTheme.primaryColor)
         .overlay(alignment: .bottomTrailing) {
             Image("relationshipHeaderCouple")
                 .resizable()
@@ -2406,10 +2975,10 @@ private struct HistoryRow: View {
     let history: DateHistory
 
     @AppStorage("dateLogTheme")
-    private var selectedThemeRawValue = DateLogTheme.pink.rawValue
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
 
     private var selectedTheme: DateLogTheme {
-        DateLogTheme(rawValue: selectedThemeRawValue) ?? .pink
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
     }
 
     private var sortedPlaces: [DatePlace] {
@@ -2438,7 +3007,7 @@ private struct HistoryRow: View {
                 .frame(width: 6)
 
             VStack(alignment: .leading, spacing: 12) {
-                if
+                if history.type == .record,
                     let imageData = history.coverImageData,
                     let uiImage = UIImage(data: imageData)
                 {
@@ -2487,24 +3056,7 @@ private struct HistoryRow: View {
                     .foregroundStyle(.secondary)
                 }
 
-                if !history.memo.isEmpty {
-                    Text(history.memo)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-
                 HStack(spacing: 8) {
-                    Label(
-                        history.type.displayName,
-                        systemImage: history.type.systemImage
-                    )
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(selectedTheme.primaryColor.opacity(0.10))
-                    .clipShape(Capsule())
-
                     Label(
                         "\(sortedPlaces.count)곳",
                         systemImage: "location.fill"

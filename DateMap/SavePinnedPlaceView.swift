@@ -13,6 +13,8 @@ struct SavePinnedPlaceView: View {
 
     let coordinate: CoordinateData
     let suggestedPlaceName: String
+    /// 위시에서 넘어온 장소라면 원본 위시의 ID
+    var sourceWishID: UUID?
     let onSaved: () -> Void
 
     @State private var placeName = ""
@@ -23,6 +25,13 @@ struct SavePinnedPlaceView: View {
     @State private var newDateTitle = ""
     @State private var newDate = Date()
     @State private var newDateMemo = ""
+
+    @AppStorage("dateLogTheme")
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
+
+    private var selectedTheme: DateLogTheme {
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
+    }
 
     var body: some View {
         NavigationStack {
@@ -108,8 +117,10 @@ struct SavePinnedPlaceView: View {
                     .foregroundStyle(.secondary)
                 }
             }
+            .dateLogListBackground(selectedTheme)
             .navigationTitle("장소 저장")
             .navigationBarTitleDisplayMode(.inline)
+            .tint(selectedTheme.primaryColor)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("취소") {
@@ -201,7 +212,8 @@ struct SavePinnedPlaceView: View {
                 in: .whitespacesAndNewlines
             ),
             latitude: coordinate.latitude,
-            longitude: coordinate.longitude
+            longitude: coordinate.longitude,
+            sourceWishID: sourceWishID
         )
 
         place.history = history

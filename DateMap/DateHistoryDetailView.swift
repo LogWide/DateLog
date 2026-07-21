@@ -16,12 +16,17 @@ struct DateHistoryDetailView: View {
     @State private var selectedCoverPhotoItem: PhotosPickerItem?
     @State private var isShowingPlacePhotoPicker = false
     @State private var showingDeleteAlert = false
+    @State private var usesManualPlaceOrder = true
+    @State private var isRecommendingRoute = false
+    @State private var routeRecommendationMessage: String?
+    @State private var pendingRecommendedPlaces: [DatePlace]?
+    @State private var newCommentText = ""
 
     @AppStorage("dateLogTheme")
-    private var selectedThemeRawValue = DateLogTheme.pink.rawValue
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
 
     private var selectedTheme: DateLogTheme {
-        DateLogTheme(rawValue: selectedThemeRawValue) ?? .pink
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
     }
 
     private var sortedPlaces: [DatePlace] {
@@ -36,10 +41,21 @@ struct DateHistoryDetailView: View {
     var body: some View {
         List {
             Section("기본 정보") {
-                Label(
-                    history.type.displayName,
-                    systemImage: history.type.systemImage
-                )
+                if history.type == .plan || isEditingPlaces {
+                    Picker("데이트 유형", selection: Binding(
+                        get: { history.type },
+                        set: { newType in
+                            history.type = newType
+                            saveHistoryChanges()
+                        }
+                    )) {
+                        ForEach(DateHistoryType.allCases, id: \.self) { type in
+                            Label(type.displayName, systemImage: type.systemImage)
+                                .tag(type)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
 
                 DatePicker(
                     "데이트 날짜",
@@ -58,41 +74,61 @@ struct DateHistoryDetailView: View {
                 .environment(\.locale, Locale(identifier: "ko_KR"))
             }
 
-            Section("대표사진") {
-                if let imageData = history.coverImageData,
-                   let uiImage = UIImage(data: imageData) {
-                    Image(uiImage: uiImage)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 140)
-                        .clipShape(
-                            RoundedRectangle(
-                                cornerRadius: 16,
-                                style: .continuous
+            if history.type == .record {
+                Section("대표사진") {
+                    if let imageData = history.coverImageData,
+                       let uiImage = UIImage(data: imageData) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 140)
+                            .clipShape(
+                                RoundedRectangle(
+                                    cornerRadius: 16,
+                                    style: .continuous
+                                )
                             )
+                    } else {
+                        ContentUnavailableView(
+                            "대표사진 없음",
+                            systemImage: "photo",
+                            description: Text("대표사진를 아직 선택하지 않았습니다.")
                         )
-                } else {
-                    ContentUnavailableView(
-                        "대표사진 없음",
-                        systemImage: "photo",
-                        description: Text("대표사진를 아직 선택하지 않았습니다.")
-                    )
-                }
+                    }
 
-                Button {
-                    isShowingCoverOptions = true
-                } label: {
-                    Label(
-                        history.coverImageData == nil
-                            ? "대표사진 선택"
-                            : "대표사진 변경",
-                        systemImage: "photo.badge.plus"
-                    )
+                    Button {
+                        isShowingCoverOptions = true
+                    } label: {
+                        Label(
+                            history.coverImageData == nil
+                                ? "대표사진 선택"
+                                : "대표사진 변경",
+                            systemImage: "photo.badge.plus"
+                        )
+                    }
                 }
             }
 
             Section {
+                if history.type == .plan {
+                    Toggle("순서 지정", isOn: $usesManualPlaceOrder)
+
+                    Button {
+                        recommendPlanOrder()
+                    } label: {
+                        Label("AI 순서 추천", systemImage: "sparkles")
+                            .font(.body.weight(.semibold))
+                    }
+                    .disabled(isRecommendingRoute || routablePlaces.count < 2)
+
+                    if let routeRecommendationMessage {
+                        Text(routeRecommendationMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 if sortedPlaces.isEmpty {
                     Text("아직 추가된 장소가 없습니다.")
                         .foregroundStyle(.secondary)
@@ -182,18 +218,82 @@ struct DateHistoryDetailView: View {
                 }
             }
 
-            Section("메모") {
-                if history.memo.isEmpty {
-                    Text("작성된 메모가 없습니다.")
+            Section("댓글") {
+                if sortedComments.isEmpty {
+                    Text("아직 댓글이 없습니다.")
                         .foregroundStyle(.secondary)
                 } else {
-                    Text(history.memo)
+                    ForEach(sortedComments) { comment in
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(comment.content)
+
+                            Text(
+                                comment.createdAt,
+                                format: .dateTime.year().month().day().hour().minute()
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 2)
+                        .contextMenu {
+                            Button(
+                                "댓글 삭제",
+                                systemImage: "trash",
+                                role: .destructive
+                            ) {
+                                deleteComment(comment)
+                            }
+                        }
+                    }
+                    .onDelete(perform: deleteComments)
+                }
+
+                HStack(spacing: 10) {
+                    TextField(
+                        "댓글을 입력하세요",
+                        text: $newCommentText,
+                        axis: .vertical
+                    )
+
+                    Button("등록") {
+                        addComment()
+                    }
+                    .font(.body.weight(.semibold))
+                    .disabled(trimmedNewComment.isEmpty)
                 }
             }
         }
+        .dateLogListBackground(selectedTheme)
         .navigationTitle(history.title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(selectedTheme.color, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(
+            selectedTheme.navigationColorScheme,
+            for: .navigationBar
+        )
+        .dateLogBackChevron(selectedTheme)
         .tint(selectedTheme.primaryColor)
+        .overlay {
+            if isRecommendingRoute {
+                ZStack {
+                    Rectangle()
+                        .fill(.ultraThinMaterial)
+                        .ignoresSafeArea()
+
+                    VStack(spacing: 18) {
+                        ProgressView()
+                            .tint(selectedTheme.primaryColor)
+                            .scaleEffect(1.3)
+
+                        Text("AI가 데이트 코스를\n분석하고 있어요")
+                            .font(.pretendard(size: 21, weight: .bold))
+                            .foregroundStyle(.primary)
+                            .multilineTextAlignment(.center)
+                    }
+                }
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button(isEditingPlaces ? "완료" : "편집") {
@@ -217,6 +317,8 @@ struct DateHistoryDetailView: View {
         }
         .sheet(isPresented: $isShowingPlacePhotoPicker) {
             PlacePhotoPickerView(history: history) { imageData in
+                guard history.type == .record else { return }
+
                 history.coverImageData = imageData
                 saveHistoryChanges()
             }
@@ -244,7 +346,31 @@ struct DateHistoryDetailView: View {
             Button("취소", role: .cancel) {}
         }
         .alert(
-            "이 \(history.type.displayName)을 삭제할까요?",
+            "AI 추천 코스",
+            isPresented: Binding(
+                get: { pendingRecommendedPlaces != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        pendingRecommendedPlaces = nil
+                    }
+                }
+            ),
+            presenting: pendingRecommendedPlaces
+        ) { recommendedPlaces in
+            Button("이 순서로 변경") {
+                applyRecommendedOrder(recommendedPlaces)
+            }
+
+            Button("그대로 두기", role: .cancel) {
+                pendingRecommendedPlaces = nil
+            }
+        } message: { recommendedPlaces in
+            Text(
+                "AI가 추천하는 코스예요.\n\n\(recommendedPlaces.map(\.name).joined(separator: " → "))\n\n이 순서로 바꿀까요?"
+            )
+        }
+        .alert(
+            "이 데이트를 삭제할까요?",
             isPresented: $showingDeleteAlert
         ) {
             Button("삭제", role: .destructive) {
@@ -253,7 +379,7 @@ struct DateHistoryDetailView: View {
 
             Button("취소", role: .cancel) {}
         } message: {
-            Text("\(history.type.displayName)과 장소 정보가 모두 삭제되며 복구할 수 없습니다.")
+            Text("데이트와 장소 정보가 모두 삭제되며 복구할 수 없습니다.")
         }
         .photosPicker(
             isPresented: $isShowingPhotoLibrary,
@@ -261,6 +387,11 @@ struct DateHistoryDetailView: View {
             matching: .images
         )
         .task(id: selectedCoverPhotoItem) {
+            guard history.type == .record else {
+                selectedCoverPhotoItem = nil
+                return
+            }
+
             guard let selectedCoverPhotoItem else { return }
 
             if
@@ -273,6 +404,213 @@ struct DateHistoryDetailView: View {
                 saveHistoryChanges()
             }
         }
+    }
+
+    private var routablePlaces: [DatePlace] {
+        sortedPlaces.filter { $0.latitude != nil && $0.longitude != nil }
+    }
+
+    private var sortedComments: [DateComment] {
+        history.comments.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    private var trimmedNewComment: String {
+        newCommentText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func addComment() {
+        let content = trimmedNewComment
+
+        guard !content.isEmpty else {
+            return
+        }
+
+        let comment = DateComment(content: content)
+        comment.history = history
+        modelContext.insert(comment)
+        newCommentText = ""
+        saveHistoryChanges()
+    }
+
+    private func deleteComment(_ comment: DateComment) {
+        modelContext.delete(comment)
+        saveHistoryChanges()
+    }
+
+    private func deleteComments(at offsets: IndexSet) {
+        for index in offsets {
+            modelContext.delete(sortedComments[index])
+        }
+
+        saveHistoryChanges()
+    }
+
+    private func recommendPlanOrder() {
+        guard history.type == .plan else {
+            return
+        }
+
+        let places = routablePlaces
+
+        guard places.count >= 2 else {
+            routeRecommendationMessage = "좌표가 있는 장소가 2곳 이상 필요합니다."
+            return
+        }
+
+        isRecommendingRoute = true
+        routeRecommendationMessage = nil
+
+        Task { @MainActor in
+            let recommendedPlaces = await recommendedPlanRoute(from: places)
+
+            isRecommendingRoute = false
+
+            if recommendedPlaces.map(\.persistentModelID) ==
+                routablePlaces.map(\.persistentModelID) {
+                routeRecommendationMessage = "지금 순서가 AI 추천 순서와 같아요."
+            } else {
+                pendingRecommendedPlaces = recommendedPlaces
+            }
+        }
+    }
+
+    private func applyRecommendedOrder(
+        _ recommendedPlaces: [DatePlace]
+    ) {
+        for (index, place) in recommendedPlaces.enumerated() {
+            place.order = index
+        }
+
+        var nextOrder = recommendedPlaces.count
+        for place in sortedPlaces where !recommendedPlaces.contains(where: { $0 === place }) {
+            place.order = nextOrder
+            nextOrder += 1
+        }
+
+        saveHistoryChanges()
+        usesManualPlaceOrder = false
+        pendingRecommendedPlaces = nil
+        routeRecommendationMessage = "추천 순서로 정리했습니다."
+    }
+
+    private func recommendedPlanRoute(
+        from places: [DatePlace]
+    ) async -> [DatePlace] {
+        var bestRoute = places
+        var bestCost = Double.greatestFiniteMagnitude
+
+        for startPlace in places {
+            var route = [startPlace]
+            var remainingPlaces = places.filter { $0 !== startPlace }
+            var totalCost: Double = 0
+
+            while let currentPlace = route.last, !remainingPlaces.isEmpty {
+                var bestCandidate: DatePlace?
+                var bestCandidateCost = Double.greatestFiniteMagnitude
+
+                for candidate in remainingPlaces {
+                    let cost = await routeCost(
+                        from: currentPlace,
+                        to: candidate
+                    )
+
+                    if cost < bestCandidateCost {
+                        bestCandidate = candidate
+                        bestCandidateCost = cost
+                    }
+                }
+
+                guard let bestCandidate else {
+                    break
+                }
+
+                route.append(bestCandidate)
+                totalCost += bestCandidateCost
+                remainingPlaces.removeAll { $0 === bestCandidate }
+            }
+
+            if totalCost < bestCost {
+                bestRoute = route
+                bestCost = totalCost
+            }
+        }
+
+        return bestRoute
+    }
+
+    private func routeCost(
+        from startPlace: DatePlace,
+        to goalPlace: DatePlace
+    ) async -> Double {
+        guard
+            let startLatitude = startPlace.latitude,
+            let startLongitude = startPlace.longitude,
+            let goalLatitude = goalPlace.latitude,
+            let goalLongitude = goalPlace.longitude
+        else {
+            return Double.greatestFiniteMagnitude
+        }
+
+        let baseDistance: Double
+
+        do {
+            let route = try await RouteService.route(
+                startLatitude: startLatitude,
+                startLongitude: startLongitude,
+                goalLatitude: goalLatitude,
+                goalLongitude: goalLongitude
+            )
+            baseDistance = Double(route.distance)
+        } catch {
+            baseDistance = haversineDistance(
+                startLatitude: startLatitude,
+                startLongitude: startLongitude,
+                goalLatitude: goalLatitude,
+                goalLongitude: goalLongitude
+            )
+        }
+
+        return baseDistance + consecutiveDiningPenalty(
+            from: startPlace,
+            to: goalPlace
+        )
+    }
+
+    private func consecutiveDiningPenalty(
+        from startPlace: DatePlace,
+        to goalPlace: DatePlace
+    ) -> Double {
+        let diningCategories: Set<String> = ["식당", "카페"]
+        let startCategory = PlaceCategoryNormalizer.categoryName(
+            from: startPlace.categoryName
+        )
+        let goalCategory = PlaceCategoryNormalizer.categoryName(
+            from: goalPlace.categoryName
+        )
+
+        return diningCategories.contains(startCategory) &&
+            diningCategories.contains(goalCategory)
+            ? 50_000
+            : 0
+    }
+
+    private func haversineDistance(
+        startLatitude: Double,
+        startLongitude: Double,
+        goalLatitude: Double,
+        goalLongitude: Double
+    ) -> Double {
+        let earthRadius = 6_371_000.0
+        let startLatitudeRadians = startLatitude * .pi / 180
+        let goalLatitudeRadians = goalLatitude * .pi / 180
+        let latitudeDelta = (goalLatitude - startLatitude) * .pi / 180
+        let longitudeDelta = (goalLongitude - startLongitude) * .pi / 180
+
+        let haversine = sin(latitudeDelta / 2) * sin(latitudeDelta / 2) +
+            cos(startLatitudeRadians) * cos(goalLatitudeRadians) *
+            sin(longitudeDelta / 2) * sin(longitudeDelta / 2)
+
+        return earthRadius * 2 * atan2(sqrt(haversine), sqrt(1 - haversine))
     }
 
     private func saveHistoryChanges() {

@@ -9,13 +9,12 @@ enum AppTab: Hashable {
     case history
     case map
     case wish
-    case settings
+    case more
 }
 
 enum MapTimeScope: String, CaseIterable, Identifiable {
-    case date = "데이트"
-    case month = "월별"
-    case year = "연도별"
+    case all = "전체 보기"
+    case date = "데이트별 보기"
 
     var id: Self { self }
 }
@@ -56,37 +55,52 @@ struct ContentView: View {
     @State private var selectedSavedPlace: DatePlace?
     @State private var selectedPlaceName = ""
 
+    /// 장소 저장 시 연결할 원본 위시 ID (위시 선택으로 시작된 경우)
+    @State private var selectedSourceWishID: UUID?
+
     @AppStorage("dateLogTheme")
-    private var selectedThemeRawValue = DateLogTheme.pink.rawValue
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
 
     private var selectedTheme: DateLogTheme {
-        DateLogTheme(rawValue: selectedThemeRawValue) ?? .pink
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
     }
 
     @State private var isShowingSavePlace = false
     @State private var isShowingPlaceSearch = false
+    @State private var isShowingMapPlaceSearch = false
     @State private var isShowingMapPinPicker = false
     @State private var directPlaceName = ""
     @State private var selectedSearchResult: PlaceSearchResult?
     @State private var isShowingPlaceActionSheet = false
     @State private var selectedDistrictVisit: MapDistrictVisitSummary?
-    @State private var isShowingDistrictPlaces = false
+    @State private var selectedDistrictPage: MapDistrictVisitSummary?
     @State private var isShowingQuickDateAdd = false
     @State private var isShowingQuickDiaryAdd = false
-    @State private var isShowingQuickMemoAdd = false
 
     @State private var selectedHistory: DateHistory?
     @State private var isShowingHistorySelector = false
-    @State private var mapTimeScope: MapTimeScope = .date
+    @State private var mapTimeScope: MapTimeScope = .all
     @State private var mapDisplayMode: MapDisplayMode = .pins
     @State private var selectedMapMonth = Date()
     @State private var selectedMapYear = Date()
     @State private var selectedMapCategory: String?
+    @State private var historyQuickAddTargetDate: Date?
+
+    private var quickAddInitialDate: Date {
+        Date()
+    }
 
     private var allMapPlaces: [DatePlace] {
-        histories.flatMap { history in
-            history.places
-        }
+        histories
+            .filter { $0.type == .record }
+            .flatMap { history in
+                history.places
+            }
+    }
+
+    /// 지도 검색 대상 — 기록과 계획에 담긴 모든 장소
+    private var searchableMapPlaces: [DatePlace] {
+        histories.flatMap { $0.places }
     }
 
     private var mapCategories: [String] {
@@ -105,45 +119,13 @@ struct ContentView: View {
     }
 
     private var scopedMapPlaces: [DatePlace] {
-        let calendar = Calendar(identifier: .gregorian)
         let scopedHistories: [DateHistory]
-
-        if mapDisplayMode == .heatmap {
-            let places = allMapPlaces.sorted { first, second in
-                (first.history?.date ?? .distantPast) <
-                    (second.history?.date ?? .distantPast)
-            }
-
-            guard let selectedMapCategory else {
-                return places
-            }
-
-            return places.filter {
-                PlaceCategoryNormalizer.categoryName(
-                    from: $0.categoryName
-                ) == selectedMapCategory
-            }
-        }
 
         switch mapTimeScope {
         case .date:
             scopedHistories = selectedHistory.map { [$0] } ?? []
-        case .month:
-            scopedHistories = histories.filter {
-                calendar.isDate(
-                    $0.date,
-                    equalTo: selectedMapMonth,
-                    toGranularity: .month
-                )
-            }
-        case .year:
-            scopedHistories = histories.filter {
-                calendar.isDate(
-                    $0.date,
-                    equalTo: selectedMapYear,
-                    toGranularity: .year
-                )
-            }
+        case .all:
+            scopedHistories = histories.filter { $0.type == .record }
         }
 
         let places = scopedHistories
@@ -172,91 +154,44 @@ struct ContentView: View {
         scopedMapPlaces
     }
 
+    private func districtPlaces(
+        for summary: MapDistrictVisitSummary
+    ) -> [DatePlace] {
+        displayedPlaces
+            .filter { place in
+                MapDistrictStore.districtCode(for: place) == summary.code
+            }
+            .sorted { first, second in
+                let firstDate = first.history?.date ?? .distantPast
+                let secondDate = second.history?.date ?? .distantPast
+
+                if firstDate == secondDate {
+                    return first.order < second.order
+                }
+
+                return firstDate > secondDate
+            }
+    }
+
     var body: some View {
         TabView(selection: $selectedTab) {
-            HistoryView()
+            HistoryView(quickAddTargetDate: $historyQuickAddTargetDate)
                 .tabItem {
                     Label("기록", systemImage: "calendar")
                 }
                 .tag(AppTab.history)
 
-            NavigationStack {
-                ZStack(alignment: .bottom) {
-                    MapView(
-                        places: displayedPlaces,
-                        showsHeatmap: mapDisplayMode == .heatmap,
-                        showsMarkerOrder: mapTimeScope == .date,
-                        selectedCoordinate: $selectedCoordinate,
-                        selectedSavedPlace: $selectedSavedPlace,
-                        selectedPlaceName: $selectedPlaceName,
-                        selectedDistrictVisit: $selectedDistrictVisit
-                    )
-                    .ignoresSafeArea(edges: .top)
-
-                    if let districtVisit = selectedDistrictVisit {
-                        VStack {
-                            districtVisitCard(districtVisit)
-                                .padding(.horizontal, 18)
-                                .padding(.top, 12)
-
-                            Spacer()
-                        }
-                    }
-
-                    VStack(spacing: 12) {
-                        mapControls
-
-                        if let place = selectedSavedPlace {
-                            savedPlaceCard(place)
-                        }
-
-                        if let coordinate = selectedCoordinate {
-                            selectedCoordinateCard(coordinate)
-                        }
-                    }
-                    .padding()
-                    .padding(.bottom, 40)
-                }
-                .navigationTitle("지도")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button {
-                            selectedTab = .history
-                        } label: {
-                            Label("기록", systemImage: "chevron.left")
-                        }
-                        .accessibilityLabel("기록으로 돌아가기")
-                    }
-
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            isShowingPlaceSearch = true
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "plus")
-                                Text("장소 추가")
-                                    .font(.subheadline.weight(.semibold))
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background(selectedTheme.primaryColor)
-                            .foregroundStyle(.white)
-                            .clipShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("장소 추가")
-                    }
-                }
-            }
+            mapTabView
             .sheet(isPresented: $isShowingSavePlace) {
                 if let coordinate = selectedCoordinate {
                     SavePinnedPlaceView(
                         coordinate: coordinate,
-                        suggestedPlaceName: selectedPlaceName
+                        suggestedPlaceName: selectedPlaceName,
+                        sourceWishID: selectedSourceWishID
                     ) {
                         selectedCoordinate = nil
                         selectedPlaceName = ""
+                        selectedSourceWishID = nil
                     }
                 }
             }
@@ -271,10 +206,12 @@ struct ContentView: View {
                         selectedSavedPlace = nil
                         selectedPlaceName = directName
                         selectedCoordinate = nil
+                        selectedSourceWishID = nil
                     },
                     onSelectWish: { wish in
                         selectedSavedPlace = nil
                         selectedPlaceName = wish.name
+                        selectedSourceWishID = wish.id
 
                         if wish.latitude != 0 || wish.longitude != 0 {
                             selectedCoordinate = CoordinateData(
@@ -306,6 +243,7 @@ struct ContentView: View {
 
                             selectedSavedPlace = nil
                             selectedPlaceName = result.cleanTitle
+                            selectedSourceWishID = nil
                             selectedCoordinate = CoordinateData(
                                 latitude: latitude,
                                 longitude: longitude
@@ -330,45 +268,45 @@ struct ContentView: View {
                     )
                 }
             }
+            .sheet(isPresented: $isShowingMapPlaceSearch) {
+                MapPlaceSearchView(places: searchableMapPlaces) { place in
+                    selectedCoordinate = nil
+                    selectedDistrictVisit = nil
+                    selectedSavedPlace = place
+                }
+            }
             .sheet(isPresented: $isShowingHistorySelector) {
                 HistorySelectionSheet(
-                    histories: histories,
+                    histories: histories.filter { $0.type == .record },
                     selectedHistory: $selectedHistory
                 )
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
             }
             .onAppear {
-                if selectedHistory == nil {
-                    selectedHistory = histories.first
+                if selectedHistory == nil || selectedHistory?.type == .plan {
+                    selectedHistory = histories.first { $0.type == .record }
                 }
             }
             .onChange(of: selectedHistory) {
                 selectedCoordinate = nil
                 selectedSavedPlace = nil
                 selectedDistrictVisit = nil
-                isShowingDistrictPlaces = false
             }
             .onChange(of: mapTimeScope) {
                 selectedCoordinate = nil
                 selectedSavedPlace = nil
                 selectedDistrictVisit = nil
-                isShowingDistrictPlaces = false
             }
             .onChange(of: mapDisplayMode) {
                 selectedCoordinate = nil
                 selectedSavedPlace = nil
                 selectedDistrictVisit = nil
-                isShowingDistrictPlaces = false
             }
             .onChange(of: selectedMapCategory) {
                 selectedCoordinate = nil
                 selectedSavedPlace = nil
                 selectedDistrictVisit = nil
-                isShowingDistrictPlaces = false
-            }
-            .onChange(of: selectedDistrictVisit) {
-                isShowingDistrictPlaces = false
             }
             .onChange(of: mapCategories) { _, categories in
                 guard
@@ -381,7 +319,6 @@ struct ContentView: View {
                 self.selectedMapCategory = nil
                 selectedSavedPlace = nil
                 selectedDistrictVisit = nil
-                isShowingDistrictPlaces = false
             }
             .tabItem {
                 Label("지도", systemImage: "map")
@@ -396,11 +333,13 @@ struct ContentView: View {
             }
             .tag(AppTab.wish)
 
-            SettingsView()
-                .tabItem {
-                    Label("설정", systemImage: "gearshape")
-                }
-                .tag(AppTab.settings)
+            NavigationStack {
+                MoreView()
+            }
+            .tabItem {
+                Label("전체", systemImage: "line.3.horizontal")
+            }
+            .tag(AppTab.more)
         }
         .toolbar(.hidden, for: .tabBar)
         .tint(selectedTheme.primaryColor)
@@ -409,15 +348,118 @@ struct ContentView: View {
         }
         .preferredColorScheme(.light)
         .sheet(isPresented: $isShowingQuickDateAdd) {
-            AddDateHistoryView(initialDate: Date())
+            AddDateHistoryView(initialDate: quickAddInitialDate)
         }
         .sheet(isPresented: $isShowingQuickDiaryAdd) {
-            AddDiaryView(date: Date())
+            AddDiaryView(date: quickAddInitialDate)
         }
-        .sheet(isPresented: $isShowingQuickMemoAdd) {
-            AddMemoView(date: Date())
+        .task {
+            migrateHistoryMemosToComments()
         }
     }
+
+    /// 예전 버전에서 데이트에 저장해둔 메모를 댓글로 옮긴다.
+    private func migrateHistoryMemosToComments() {
+        let migratableHistories = histories.filter { !$0.memo.isEmpty }
+
+        guard !migratableHistories.isEmpty else {
+            return
+        }
+
+        for history in migratableHistories {
+            let comment = DateComment(content: history.memo)
+            comment.history = history
+            modelContext.insert(comment)
+            history.memo = ""
+        }
+
+        do {
+            try modelContext.save()
+        } catch {
+            print("메모를 댓글로 옮기지 못했습니다: \(error)")
+        }
+    }
+
+    private var mapTabView: some View {
+        NavigationStack {
+            ZStack(alignment: .bottom) {
+                MapView(
+                    places: displayedPlaces,
+                    showsHeatmap: mapDisplayMode == .heatmap,
+                    showsMarkerOrder: mapDisplayMode == .pins && mapTimeScope == .date,
+                    selectedCoordinate: $selectedCoordinate,
+                    selectedSavedPlace: $selectedSavedPlace,
+                    selectedPlaceName: $selectedPlaceName,
+                    selectedDistrictVisit: $selectedDistrictVisit,
+                    onDistrictBubbleTap: { summary in
+                        selectedDistrictPage = summary
+                    }
+                )
+                .ignoresSafeArea(edges: .top)
+
+                VStack(spacing: 10) {
+                    HStack {
+                        Spacer()
+                        mapDisplayModeButton
+                    }
+
+                    mapControls
+
+                    if let place = selectedSavedPlace {
+                        savedPlaceCard(place)
+                    }
+
+                    if let coordinate = selectedCoordinate {
+                        selectedCoordinateCard(coordinate)
+                    }
+                }
+                .padding()
+                .padding(.bottom, 40)
+            }
+            .navigationTitle("지도")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(selectedTheme.color, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(
+                selectedTheme.navigationColorScheme,
+                for: .navigationBar
+            )
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        selectedTab = .history
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(selectedTheme.navigationTextColor)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("기록으로 돌아가기")
+                }
+                .sharedBackgroundVisibility(.hidden)
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isShowingMapPlaceSearch = true
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(selectedTheme.navigationTextColor)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("내 장소 검색")
+                }
+                .sharedBackgroundVisibility(.hidden)
+            }
+            .navigationDestination(item: $selectedDistrictPage) { summary in
+                MapDistrictVisitListView(
+                    summary: summary,
+                    places: districtPlaces(for: summary)
+                )
+            }
+        }
+    }
+
     private var customBottomBar: some View {
         HStack(alignment: .top, spacing: 0) {
             customTabButton(
@@ -443,27 +485,27 @@ struct ContentView: View {
             )
 
             customTabButton(
-                tab: .settings,
-                title: "설정",
-                systemImage: "gearshape"
+                tab: .more,
+                title: "전체",
+                systemImage: "line.3.horizontal"
             )
         }
         .padding(.top, 10)
         .padding(.bottom, 8)
-        .background(Color(.systemBackground))
-        .overlay(alignment: .top) {
-            Divider()
+        .background(alignment: .top) {
+            // 구분선을 배경에 두어 + 버튼이 항상 선 위에 그려지게 하고,
+            // 배경은 홈 인디케이터 영역까지 내려 아래로 콘텐츠가 비치지 않게 한다
+            ZStack(alignment: .top) {
+                Color(.systemBackground)
+                    .ignoresSafeArea(edges: .bottom)
+
+                Divider()
+            }
         }
     }
 
     private var quickAddButton: some View {
         Menu {
-            Button {
-                isShowingQuickDateAdd = true
-            } label: {
-                Label("데이트 추가", systemImage: "heart.fill")
-            }
-
             Button {
                 isShowingQuickDiaryAdd = true
             } label: {
@@ -471,32 +513,31 @@ struct ContentView: View {
             }
 
             Button {
-                isShowingQuickMemoAdd = true
+                isShowingQuickDateAdd = true
             } label: {
-                Label("메모 추가", systemImage: "note.text")
+                Label("데이트 추가", systemImage: "heart.fill")
             }
         } label: {
             ZStack {
+                // 완전 불투명한 흰 바탕을 깔아 뒤의 구분선이 비치지 않게 한다
+                Circle()
+                    .fill(Color.white)
+
                 Circle()
                     .fill(selectedTheme.primaryColor)
-                    .frame(width: 58, height: 58)
 
                 Image(systemName: "plus")
                     .font(.title2.weight(.bold))
                     .foregroundStyle(.white)
             }
             .frame(width: 58, height: 58)
-            .background(
-                Circle()
-                    .fill(selectedTheme.primaryColor)
+            .compositingGroup()
+            .shadow(
+                color: selectedTheme.primaryColor.opacity(0.36),
+                radius: 12,
+                x: 0,
+                y: 7
             )
-            .clipShape(Circle())
-                .shadow(
-                    color: selectedTheme.primaryColor.opacity(0.36),
-                    radius: 12,
-                    x: 0,
-                    y: 7
-                )
         }
         .buttonStyle(.plain)
         .accessibilityLabel("기록 추가")
@@ -513,6 +554,7 @@ struct ContentView: View {
             VStack(spacing: 4) {
                 Image(systemName: systemImage)
                     .font(.system(size: 20, weight: .semibold))
+                    .frame(height: 24)
 
                 Text(title)
                     .font(.caption2.weight(.semibold))
@@ -545,7 +587,7 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(selectedHistory.title)
                             .font(.headline)
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(selectedTheme.navigationTextColor)
                             .lineLimit(1)
 
                         Text(
@@ -554,17 +596,22 @@ struct ContentView: View {
                             )
                         )
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(
+                            selectedTheme.navigationTextColor.opacity(0.72)
+                        )
                         .lineLimit(1)
                     }
                 } else {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("데이트 선택")
                             .font(.headline)
+                            .foregroundStyle(selectedTheme.navigationTextColor)
 
                         Text("선택된 데이트가 없습니다")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(
+                                selectedTheme.navigationTextColor.opacity(0.72)
+                            )
                     }
                 }
 
@@ -572,6 +619,7 @@ struct ContentView: View {
 
                 Text("\(displayedPlaces.count)곳")
                     .font(.caption.weight(.semibold))
+                    .foregroundStyle(selectedTheme.primaryColor)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background(selectedTheme.primaryColor.opacity(0.12))
@@ -579,137 +627,238 @@ struct ContentView: View {
 
                 Image(systemName: "chevron.down")
                     .font(.caption.bold())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(
+                        selectedTheme.navigationTextColor.opacity(0.72)
+                    )
             }
-            .padding()
+            .padding(.horizontal, 2)
             .frame(maxWidth: .infinity)
-            .background(.regularMaterial)
-            .clipShape(
-                RoundedRectangle(
-                    cornerRadius: 20,
-                    style: .continuous
-                )
-            )
         }
         .buttonStyle(.plain)
         .disabled(histories.isEmpty)
     }
 
-    private var mapControls: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
-                Picker("표현", selection: $mapDisplayMode) {
-                    ForEach(MapDisplayMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
+    private var mapDisplayModeButtonIcon: String {
+        mapDisplayMode == .pins ? "🗺️" : "📍"
+    }
 
-                Menu {
-                    Button {
-                        selectedMapCategory = nil
-                    } label: {
-                        HStack {
-                            if selectedMapCategory == nil {
-                                Image(systemName: "checkmark")
-                            }
+    private var mapDisplayModeButtonTitle: String {
+        mapDisplayMode == .pins ? "히트맵" : "핀"
+    }
 
-                            Text("전체 카테고리")
-                        }
-                    }
+    private var mapDisplayModeButton: some View {
+        Button {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                mapDisplayMode = mapDisplayMode == .pins ? .heatmap : .pins
+            }
+        } label: {
+            HStack(spacing: 7) {
+                Text(mapDisplayModeButtonIcon)
+                    .font(.system(size: 15))
 
-                    ForEach(mapCategories, id: \.self) { category in
-                        Button {
-                            selectedMapCategory = category
-                        } label: {
-                            HStack {
-                                if selectedMapCategory == category {
-                                    Image(systemName: "checkmark")
-                                }
-
-                                mapCategoryDot(category)
-                                Text(category)
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 7) {
-                        if let selectedMapCategory {
-                            mapCategoryDot(selectedMapCategory)
-                        } else {
-                            Image(systemName: "tag.fill")
-                        }
-
-                        Text(selectedMapCategory ?? "전체")
-                    }
+                Text(mapDisplayModeButtonTitle)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(selectedTheme.primaryColor)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(selectedTheme.primaryColor.opacity(0.12))
+            }
+            .foregroundStyle(selectedTheme.primaryColor)
+            .padding(.horizontal, 15)
+            .padding(.vertical, 11)
+            .background {
+                ZStack {
+                    Capsule().fill(selectedTheme.cardBackgroundColor)
+
+                    FabricTexture(
+                        lineColor: selectedTheme.navigationTextColor,
+                        lineOpacity: 0.05
+                    )
                     .clipShape(Capsule())
+
+                    Capsule()
+                        .inset(by: 3.5)
+                        .stroke(
+                            selectedTheme.stitchColor,
+                            style: StrokeStyle(
+                                lineWidth: 1.4,
+                                lineCap: .round,
+                                dash: [5, 4.5]
+                            )
+                        )
                 }
-                .disabled(mapCategories.isEmpty)
+            }
+            .shadow(
+                color: selectedTheme.primaryColor.opacity(0.20),
+                radius: 10,
+                x: 0,
+                y: 5
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(mapDisplayModeButtonTitle) 보기")
+    }
+
+    private var mapControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                mapScopeToggle
+
+                mapCategoryMenu
             }
 
-            if mapDisplayMode == .heatmap {
-                Label(
-                    "전체 기록 기준",
-                    systemImage: "map.fill"
-                )
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(selectedTheme.primaryColor)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 4)
-            } else {
-                Picker("지도 기간", selection: $mapTimeScope) {
-                    ForEach(MapTimeScope.allCases) { scope in
-                        Text(scope.rawValue).tag(scope)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                switch mapTimeScope {
-                case .date:
-                    historyPicker
-                case .month:
-                    mapPeriodStepper(
-                        title: mapMonthTitle,
-                        previousAction: {
-                            moveMapMonth(by: -1)
-                        },
-                        nextAction: {
-                            moveMapMonth(by: 1)
-                        }
-                    )
-                case .year:
-                    mapPeriodStepper(
-                        title: mapYearTitle,
-                        previousAction: {
-                            moveMapYear(by: -1)
-                        },
-                        nextAction: {
-                            moveMapYear(by: 1)
-                        }
-                    )
-                }
+            if mapTimeScope == .date {
+                historyPicker
             }
         }
-        .padding()
+        .padding(16)
         .frame(maxWidth: .infinity)
-        .background(.regularMaterial)
-        .clipShape(
-            RoundedRectangle(
-                cornerRadius: 20,
-                style: .continuous
-            )
+        .background {
+            ZStack {
+                // 헤더와 같은 흰 원단 위에 테마 색 실로 박음질한 카드
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(selectedTheme.cardBackgroundColor)
+
+                FabricTexture(
+                    lineColor: selectedTheme.navigationTextColor,
+                    lineOpacity: 0.05
+                )
+                .clipShape(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                )
+
+                StitchBorder(
+                    cornerRadius: 24,
+                    inset: 7,
+                    threadColor: selectedTheme.stitchColor
+                )
+            }
+        }
+        .shadow(
+            color: selectedTheme.primaryColor.opacity(0.18),
+            radius: 16,
+            x: 0,
+            y: 9
         )
+    }
+
+    private var mapScopeToggle: some View {
+        HStack(spacing: 4) {
+            ForEach(MapTimeScope.allCases) { scope in
+                mapScopeButton(scope)
+            }
+        }
+        .padding(4)
+        .frame(maxWidth: .infinity)
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(selectedTheme.primaryColor.opacity(0.10))
+        }
+    }
+
+    private func mapScopeButton(_ scope: MapTimeScope) -> some View {
+        let isSelected = mapTimeScope == scope
+
+        return Button {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                mapTimeScope = scope
+            }
+        } label: {
+            Text(scope.rawValue)
+                .font(.pretendard(size: 13, weight: .semiBold))
+                .foregroundStyle(
+                    isSelected
+                        ? .white
+                        : selectedTheme.navigationTextColor.opacity(0.72)
+                )
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background {
+                    if isSelected {
+                        Capsule()
+                            .fill(selectedTheme.primaryColor)
+                            .shadow(
+                                color: selectedTheme.primaryColor.opacity(0.32),
+                                radius: 6,
+                                x: 0,
+                                y: 3
+                            )
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var mapCategoryMenu: some View {
+        Menu {
+            Button {
+                selectedMapCategory = nil
+            } label: {
+                HStack {
+                    if selectedMapCategory == nil {
+                        Image(systemName: "checkmark")
+                    }
+
+                    Text("전체")
+                }
+            }
+
+            ForEach(mapCategories, id: \.self) { category in
+                Button {
+                    selectedMapCategory = category
+                } label: {
+                    Label {
+                        HStack(spacing: 6) {
+                            Text(category)
+
+                            if selectedMapCategory == category {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    } icon: {
+                        Image(uiImage: mapCategoryDotImage(for: category))
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 7) {
+                if let selectedMapCategory {
+                    mapCategoryDot(selectedMapCategory)
+                } else {
+                    Image(systemName: "tag.fill")
+                }
+
+                Text(selectedMapCategory ?? "전체")
+                    .lineLimit(1)
+            }
+            .font(.pretendard(size: 13, weight: .semiBold))
+            .foregroundStyle(selectedTheme.primaryColor)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 12)
+            .background(selectedTheme.primaryColor.opacity(0.10))
+            .clipShape(Capsule())
+        }
     }
 
     private func mapCategoryDot(_ category: String) -> some View {
         Circle()
             .fill(PlaceCategoryNormalizer.color(for: category))
-            .frame(width: 8, height: 8)
+            .frame(width: 10, height: 10)
+    }
+
+    private func mapCategoryDotImage(for category: String) -> UIImage {
+        let size = CGSize(width: 18, height: 18)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let color = UIColor(PlaceCategoryNormalizer.color(for: category))
+
+        return renderer.image { _ in
+            let rect = CGRect(x: 3, y: 3, width: 12, height: 12)
+            color.setFill()
+            UIBezierPath(ovalIn: rect).fill()
+
+            UIColor.white.withAlphaComponent(0.92).setStroke()
+            let outline = UIBezierPath(ovalIn: rect.insetBy(dx: -1, dy: -1))
+            outline.lineWidth = 1.5
+            outline.stroke()
+        }
     }
 
     private func mapPeriodStepper(
@@ -774,10 +923,10 @@ private struct HistorySelectionSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage("dateLogTheme")
-    private var selectedThemeRawValue = DateLogTheme.pink.rawValue
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
 
     private var selectedTheme: DateLogTheme {
-        DateLogTheme(rawValue: selectedThemeRawValue) ?? .pink
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
     }
 
     let histories: [DateHistory]
@@ -798,18 +947,11 @@ private struct HistorySelectionSheet: View {
                                     .foregroundStyle(.primary)
                                     .lineLimit(1)
 
-                                HStack(spacing: 6) {
-                                    Label(
-                                        history.type.displayName,
-                                        systemImage: history.type.systemImage
+                                Text(
+                                    DateDisplayFormatter.string(
+                                        from: history.date
                                     )
-
-                                    Text(
-                                        DateDisplayFormatter.string(
-                                            from: history.date
-                                        )
-                                    )
-                                }
+                                )
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
@@ -825,8 +967,10 @@ private struct HistorySelectionSheet: View {
                         .padding(.vertical, 4)
                     }
                     .buttonStyle(.plain)
+                    .listRowBackground(selectedTheme.cardBackgroundColor)
                 }
             }
+            .dateLogListBackground(selectedTheme)
             .navigationTitle("데이트 선택")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -884,13 +1028,7 @@ private struct HistorySelectionSheet: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
-        .background(.regularMaterial)
-        .clipShape(
-            RoundedRectangle(
-                cornerRadius: 20,
-                style: .continuous
-            )
-        )
+        .dateLogCard(selectedTheme, cornerRadius: 20)
     }
     private func savedPlaceCard(
         _ place: DatePlace
@@ -943,13 +1081,7 @@ private struct HistorySelectionSheet: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
-        .background(.regularMaterial)
-        .clipShape(
-            RoundedRectangle(
-                cornerRadius: 20,
-                style: .continuous
-            )
-        )
+        .dateLogCard(selectedTheme, cornerRadius: 20)
     }
 
     private func mapPlaceSubtitle(for place: DatePlace) -> String {
@@ -966,208 +1098,288 @@ private struct HistorySelectionSheet: View {
         return "\(DateDisplayFormatter.string(from: date)) 방문 · \(PlaceCategoryNormalizer.categoryName(from: place.categoryName))"
     }
 
-    private func districtVisitCard(
-        _ summary: MapDistrictVisitSummary
-    ) -> some View {
-        let districtPlaces = districtPlaces(for: summary)
+}
 
-        return VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "map.fill")
-                    .font(.title3)
-                    .foregroundStyle(selectedTheme.primaryColor)
-                    .frame(width: 42, height: 42)
-                    .background(selectedTheme.primaryColor.opacity(0.12))
-                    .clipShape(Circle())
+private struct MapDistrictVisitListView: View {
+    let summary: MapDistrictVisitSummary
+    let places: [DatePlace]
 
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(summary.name)
-                        .font(.headline.weight(.bold))
-                        .lineLimit(1)
+    @AppStorage("dateLogTheme")
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
 
-                    (
-                        Text("총 ")
-                            .font(.subheadline)
-                            .foregroundStyle(.primary)
-                        + Text("\(summary.visitCount)")
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(selectedTheme.primaryColor)
-                        + Text("회 방문")
-                            .font(.subheadline)
-                            .foregroundStyle(.primary)
-                    )
-                }
+    private var selectedTheme: DateLogTheme {
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
+    }
 
-                Spacer()
+    var body: some View {
+        List {
+            if places.isEmpty {
+                ContentUnavailableView(
+                    "방문 장소가 없습니다",
+                    systemImage: "mappin.slash",
+                    description: Text("현재 지도 조건에서 이 지역의 방문 장소를 찾지 못했습니다.")
+                )
+            } else {
+                ForEach(places) { place in
+                    NavigationLink {
+                        PlaceDetailView(place: place)
+                    } label: {
+                        HStack(spacing: 12) {
+                            Text(place.categoryEmoji)
+                                .font(.title3)
+                                .frame(width: 34, height: 34)
+                                .background(selectedTheme.primaryColor.opacity(0.12))
+                                .clipShape(Circle())
 
-                Button {
-                    selectedDistrictVisit = nil
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(place.name)
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
 
-            if isShowingDistrictPlaces {
-                Divider()
-
-                if districtPlaces.isEmpty {
-                    Text("표시할 장소가 없습니다")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    VStack(spacing: 8) {
-                        ForEach(districtPlaces) { place in
-                            NavigationLink {
-                                PlaceDetailView(place: place)
-                            } label: {
-                                districtPlaceRow(place)
+                                Text(dateText(for: place))
+                                    .font(.caption)
+                                    .foregroundStyle(selectedTheme.primaryColor)
                             }
-                            .buttonStyle(.plain)
+
+                            Spacer()
                         }
+                        .padding(.vertical, 4)
                     }
+                    .listRowBackground(selectedTheme.cardBackgroundColor)
                 }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(Color.white)
-        .clipShape(
-            RoundedRectangle(
-                cornerRadius: 16,
-                style: .continuous
-            )
+        .dateLogListBackground(selectedTheme)
+        .navigationTitle(summary.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(selectedTheme.color, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(
+            selectedTheme.navigationColorScheme,
+            for: .navigationBar
         )
-        .shadow(color: .black.opacity(0.18), radius: 18, x: 0, y: 8)
-        .onTapGesture {
-            isShowingDistrictPlaces.toggle()
-        }
+        .dateLogBackChevron(selectedTheme)
+        .tint(selectedTheme.primaryColor)
     }
 
-    private func districtPlaceRow(_ place: DatePlace) -> some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(PlaceCategoryNormalizer.color(for: place.categoryName))
-                .frame(width: 9, height: 9)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(place.name)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-
-                Text(mapPlaceSubtitle(for: place))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.vertical, 6)
-    }
-
-    private func districtPlaces(
-        for summary: MapDistrictVisitSummary
-    ) -> [DatePlace] {
-        guard let district = MapDistrictStore.districts().first(where: {
-            $0.code == summary.code
-        }) else {
-            return []
+    private func dateText(for place: DatePlace) -> String {
+        guard let date = place.history?.date else {
+            return "날짜 없음"
         }
 
-        return displayedPlaces
-            .filter {
-                place($0, isIn: district)
-            }
-            .sorted { first, second in
-                let firstDate = first.history?.date ?? .distantPast
-                let secondDate = second.history?.date ?? .distantPast
-
-                if firstDate == secondDate {
-                    return first.order < second.order
-                }
-
-                return firstDate > secondDate
-            }
-    }
-
-    private func place(
-        _ place: DatePlace,
-        isIn district: MapDistrict
-    ) -> Bool {
-        if
-            let latitude = place.latitude,
-            let longitude = place.longitude,
-            districtContains(
-                coordinate: NMGLatLng(lat: latitude, lng: longitude),
-                district: district
-            )
-        {
-            return true
-        }
-
-        return place.address.contains(district.name) ||
-            place.name.contains(district.name)
-    }
-
-    private func districtContains(
-        coordinate: NMGLatLng,
-        district: MapDistrict
-    ) -> Bool {
-        district.polygons.contains {
-            polygonContains(coordinate: coordinate, polygon: $0)
-        }
-    }
-
-    private func polygonContains(
-        coordinate: NMGLatLng,
-        polygon: [NMGLatLng]
-    ) -> Bool {
-        guard polygon.count >= 3 else {
-            return false
-        }
-
-        var isInside = false
-        var previousIndex = polygon.count - 1
-
-        for currentIndex in polygon.indices {
-            let current = polygon[currentIndex]
-            let previous = polygon[previousIndex]
-            let crossesLatitude = (current.lat > coordinate.lat) !=
-                (previous.lat > coordinate.lat)
-
-            if crossesLatitude {
-                let intersectionLongitude =
-                    (previous.lng - current.lng) *
-                    (coordinate.lat - current.lat) /
-                    (previous.lat - current.lat) +
-                    current.lng
-
-                if coordinate.lng < intersectionLongitude {
-                    isInside.toggle()
-                }
-            }
-
-            previousIndex = currentIndex
-        }
-
-        return isInside
+        return DateDisplayFormatter.string(from: date)
     }
 }
 
-private struct SettingsView: View {
+private struct MoreView: View {
+    @State private var isShowingAlbum = false
+    @State private var isShowingSettings = false
+
+    @AppStorage("dateLogTheme")
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
+
+    private var selectedTheme: DateLogTheme {
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(spacing: 10) {
+                    NavigationLink {
+                        StatsView()
+                    } label: {
+                        moreRow(
+                            title: "데이트 리포트",
+                            subtitle: "우리의 기록을 숫자로 돌아보기",
+                            systemImage: "chart.bar.fill"
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    NavigationLink {
+                        PlanListView()
+                    } label: {
+                        moreRow(
+                            title: "계획",
+                            subtitle: "다가올 데이트 계획을 한눈에",
+                            systemImage: "calendar.badge.clock"
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        isShowingAlbum = true
+                    } label: {
+                        moreRow(
+                            title: "앨범",
+                            subtitle: "함께 남긴 사진 모아보기",
+                            systemImage: "photo.on.rectangle"
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        isShowingSettings = true
+                    } label: {
+                        moreRow(
+                            title: "설정",
+                            subtitle: "테마, 기념일, 알림 관리",
+                            systemImage: "gearshape"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(16)
+        }
+        .background(selectedTheme.backgroundColor)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(selectedTheme.color, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(
+            selectedTheme.navigationColorScheme,
+            for: .navigationBar
+        )
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                // 흰 헤더 위에 테마 색으로 틴트한 로고
+                ZStack {
+                    Image("DateLogLogoText")
+                        .resizable()
+                        .scaledToFit()
+                        .foregroundStyle(selectedTheme.primaryColor)
+                    Image("DateLogLogoHeart")
+                        .resizable()
+                        .scaledToFit()
+                }
+                .frame(width: 94, height: 32)
+                .accessibilityLabel("DateLog")
+            }
+        }
+        .tint(selectedTheme.primaryColor)
+        .sheet(isPresented: $isShowingAlbum) {
+            AlbumView()
+        }
+        .sheet(isPresented: $isShowingSettings) {
+            SettingsView()
+        }
+    }
+
+    private func moreRow(
+        title: String,
+        subtitle: String,
+        systemImage: String
+    ) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: systemImage)
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(selectedTheme.primaryColor)
+                .frame(width: 46, height: 46)
+                .background(selectedTheme.primaryColor.opacity(0.10))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.pretendard(size: 16, weight: .bold))
+                    .foregroundStyle(.primary)
+
+                Text(subtitle)
+                    .font(.pretendard(size: 13, weight: .regular))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dateLogCard(selectedTheme, cornerRadius: 18)
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
+private struct PlanListView: View {
+    @Query(sort: \DateHistory.date, order: .reverse)
+    private var histories: [DateHistory]
+
+    @AppStorage("dateLogTheme")
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
+
+    private var selectedTheme: DateLogTheme {
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
+    }
+
+    private var plans: [DateHistory] {
+        histories.filter { $0.type == .plan }
+    }
+
+    var body: some View {
+        List {
+            if plans.isEmpty {
+                ContentUnavailableView(
+                    "저장된 계획이 없습니다",
+                    systemImage: "calendar.badge.clock",
+                    description: Text("데이트 계획으로 추가한 항목이 여기에 모입니다.")
+                )
+            } else {
+                ForEach(plans) { plan in
+                    NavigationLink {
+                        DateHistoryDetailView(history: plan)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(plan.title)
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+
+                            Text(DateDisplayFormatter.string(from: plan.date))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            if let latestComment = plan.comments.max(
+                                by: { $0.createdAt < $1.createdAt }
+                            ) {
+                                Text(latestComment.content)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .listRowBackground(selectedTheme.cardBackgroundColor)
+                }
+            }
+        }
+        .dateLogListBackground(selectedTheme)
+        .navigationTitle("계획")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(selectedTheme.color, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(
+            selectedTheme.navigationColorScheme,
+            for: .navigationBar
+        )
+        .dateLogBackChevron(selectedTheme)
+        .tint(selectedTheme.primaryColor)
+    }
+}
+
+struct SettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+
     @AppStorage("relationshipStartDate")
     private var relationshipStartDateInterval = Date().timeIntervalSince1970
 
     @AppStorage("showRelationshipDay")
     private var showRelationshipDay = false
+
+    @AppStorage("showRelationshipDayInHistory")
+    private var showRelationshipDayInHistory = true
 
     @AppStorage("myBirthday")
     private var myBirthdayInterval = Date().timeIntervalSince1970
@@ -1185,14 +1397,17 @@ private struct SettingsView: View {
     private var anniversaryNotificationsEnabled = false
 
     @AppStorage("dateLogTheme")
-    private var selectedThemeRawValue = DateLogTheme.pink.rawValue
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
 
     private var selectedTheme: DateLogTheme {
-        DateLogTheme(rawValue: selectedThemeRawValue) ?? .pink
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
     }
 
     @AppStorage("calendarWeekStartsOnMonday")
     private var calendarWeekStartsOnMonday = false
+
+    @AppStorage("showPlansInHistory")
+    private var showPlansInHistory = true
 
     private var relationshipStartDate: Binding<Date> {
         Binding(
@@ -1227,10 +1442,17 @@ private struct SettingsView: View {
         )
     }
 
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.pretendard(size: 14, weight: .bold))
+            .foregroundStyle(selectedTheme.primaryColor)
+            .textCase(nil)
+    }
+
     var body: some View {
         NavigationStack {
             Form {
-                Section("❤️ 커플") {
+                Section {
                     Toggle("만난 날 표시", isOn: $showRelationshipDay)
 
                     if showRelationshipDay {
@@ -1241,10 +1463,18 @@ private struct SettingsView: View {
                             displayedComponents: .date
                         )
                         .environment(\.locale, Locale(identifier: "ko_KR"))
-                    }
-                }
 
-                Section("🎂 생일") {
+                        Toggle(
+                            "기록 탭 히스토리에 만난 날 표시",
+                            isOn: $showRelationshipDayInHistory
+                        )
+                    }
+                } header: {
+                    sectionHeader("❤️ 커플")
+                }
+                .listRowBackground(selectedTheme.cardBackgroundColor)
+
+                Section {
                     Toggle("내 생일 표시", isOn: $showMyBirthday)
 
                     if showMyBirthday {
@@ -1266,9 +1496,12 @@ private struct SettingsView: View {
                         )
                         .environment(\.locale, Locale(identifier: "ko_KR"))
                     }
+                } header: {
+                    sectionHeader("🎂 생일")
                 }
+                .listRowBackground(selectedTheme.cardBackgroundColor)
 
-                Section("🔔 기념일 알림") {
+                Section {
                     Toggle(
                         "기념일 알림",
                         isOn: $anniversaryNotificationsEnabled
@@ -1279,12 +1512,12 @@ private struct SettingsView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
+                } header: {
+                    sectionHeader("🔔 기념일 알림")
                 }
+                .listRowBackground(selectedTheme.cardBackgroundColor)
 
-                Section("표시") {
-                    LabeledContent("날짜 형식", value: "2026. 1. 1.")
-                    LabeledContent("시간 형식", value: "24시간")
-
+                Section {
                     Toggle(
                         "한 주를 월요일부터 시작",
                         isOn: $calendarWeekStartsOnMonday
@@ -1297,9 +1530,25 @@ private struct SettingsView: View {
                     )
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                }
 
-                Section("앱") {
+                    Toggle(
+                        "히스토리에 계획 표시",
+                        isOn: $showPlansInHistory
+                    )
+
+                    Text(
+                        showPlansInHistory
+                            ? "데이트 계획이 히스토리에 회색 카드로 함께 표시됩니다."
+                            : "데이트 계획이 히스토리에 표시되지 않습니다."
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                } header: {
+                    sectionHeader("🗓️ 표시")
+                }
+                .listRowBackground(selectedTheme.cardBackgroundColor)
+
+                Section {
                     Picker("테마", selection: $selectedThemeRawValue) {
                         ForEach(DateLogTheme.allCases) { theme in
                             Text(theme.title)
@@ -1308,9 +1557,32 @@ private struct SettingsView: View {
                     }
 
                     LabeledContent("언어", value: "한국어")
+                } header: {
+                    sectionHeader("🎨 앱")
+                }
+                .listRowBackground(selectedTheme.cardBackgroundColor)
+            }
+            .dateLogListBackground(selectedTheme)
+            .navigationTitle("설정")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(selectedTheme.color, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(
+                selectedTheme.navigationColorScheme,
+                for: .navigationBar
+            )
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(selectedTheme.navigationTextColor)
+                    }
+                    .accessibilityLabel("설정 닫기")
                 }
             }
-            .navigationTitle("설정")
             .tint(selectedTheme.primaryColor)
         }
     }
@@ -1353,10 +1625,10 @@ private struct PhotoViewerView: View {
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage("dateLogTheme")
-    private var selectedThemeRawValue = DateLogTheme.pink.rawValue
+    private var selectedThemeRawValue = DateLogTheme.standard.rawValue
 
     private var selectedTheme: DateLogTheme {
-        DateLogTheme(rawValue: selectedThemeRawValue) ?? .pink
+        DateLogTheme(rawValue: selectedThemeRawValue) ?? .standard
     }
 
     let photo: DatePhoto
@@ -1410,4 +1682,8 @@ private struct PhotoViewerView: View {
             ],
             inMemory: true
         )
+}
+
+#Preview("설정") {
+    SettingsView()
 }

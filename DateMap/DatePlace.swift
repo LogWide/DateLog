@@ -13,6 +13,9 @@ final class DatePlace {
     var categoryName: String = "기타"
     var categoryEmoji: String = "📍"
 
+    /// 위시에서 방문 완료/계획 추가로 만들어진 장소라면 원본 위시의 ID
+    var sourceWishID: UUID?
+
     var history: DateHistory?
 
     @Relationship(
@@ -29,7 +32,8 @@ final class DatePlace {
         longitude: Double? = nil,
         address: String = "",
         categoryName: String = "기타",
-        categoryEmoji: String = "📍"
+        categoryEmoji: String = "📍",
+        sourceWishID: UUID? = nil
     ) {
         self.name = name
         self.order = order
@@ -39,5 +43,6 @@ final class DatePlace {
         self.address = address
         self.categoryName = categoryName
         self.categoryEmoji = categoryEmoji
+        self.sourceWishID = sourceWishID
     }
 }

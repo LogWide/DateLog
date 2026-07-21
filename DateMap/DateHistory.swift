@@ -50,6 +50,12 @@ final class DateHistory {
     )
     var places: [DatePlace] = []
 
+    @Relationship(
+        deleteRule: .cascade,
+        inverse: \DateComment.history
+    )
+    var comments: [DateComment] = []
+
     init(
         title: String,
         date: Date,
