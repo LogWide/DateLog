@@ -30,7 +30,6 @@ DateLog helps users manage date schedules and memories through maps, calendars, 
 
 
 ### Map
-(스크린샷)
 <img width="603" height="1311" alt="스크린샷, 2026-09-13 오후 2 33 36" src="https://github.com/user-attachments/assets/082a364a-deca-40ae-815e-263dac3447ed" />
 
 
